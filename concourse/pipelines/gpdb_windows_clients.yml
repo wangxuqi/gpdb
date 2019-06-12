@@ -1,0 +1,138 @@
+
+resource_types:
+- name: gcs
+  type: docker-image
+  source:
+    repository: frodenas/gcs-resource
+
+- name: terraform
+  type: docker-image
+  source:
+    repository: ljfranklin/terraform-resource
+
+resources:
+- name: gpdb6-centos6-build
+  type: docker-image
+  source:
+    repository: pivotaldata/gpdb6-centos6-build
+    tag: latest
+
+- name: gpdb_src
+  type: git
+  source:
+    branch: {{gpdb-git-branch}}
+    uri: {{gpdb-git-remote}}
+    ignore_paths:
+    - gpdb-doc/*
+    - README*
+
+- name: bin_gpdb_centos7
+  type: gcs
+  source:
+    bucket: {{gpdb6-bucket-name}}
+    json_key: {{concourse-gcs-resources-service-account-key}}
+    versioned_file: {{bin_gpdb6_centos7_versioned_file}}
+
+- name: bin_gpdb_clients_windows_rc
+  type: gcs
+  source:
+    bucket: ((pivotal-gp-internal-artifacts-gcs-bucket))
+    json_key: ((concourse-gcs-resources-service-account-key))
+    versioned_file: clients/published/gpdb6/greenplum-clients-x86_64.msi
+
+- name: bin_windows_gpfdist_pipe_test
+  type: gcs
+  source:
+    bucket: ((pivotal-gp-internal-artifacts-gcs-bucket))
+    json_key: ((concourse-gcs-resources-service-account-key))
+    versioned_file: clients/published/gpdb6/pipe_win10.exe
+
+- name: gpdb6-centos7-test
+  type: docker-image
+  source:
+    repository: pivotaldata/gpdb6-centos7-test
+    tag: latest
+
+- name: terraform
+  type: terraform
+  source:
+    env:
+      AWS_ACCESS_KEY_ID: {{tf-machine-access-key-id}}
+      AWS_SECRET_ACCESS_KEY: {{tf-machine-secret-access-key}}
+      GOOGLE_CREDENTIALS: {{google-service-account-key}}
+    vars:
+      project: {{google-project-id}}
+      region: {{google-region}}
+      region_zone: {{google-region-zone}}
+    storage:
+      access_key_id: {{tf-machine-access-key-id}}
+      secret_access_key: {{tf-machine-secret-access-key}}
+      region_name: {{aws-region}}
+      # This is not parameterized, on purpose. All tfstates will go to this spot,
+      # and different teams will place there clusters' tfstate files under different paths
+      bucket: gpss-concourse
+      bucket_path: clusters-google/
+
+jobs:
+- name: compile_gpdb_windows_remote
+  serial: true
+  plan:
+  # Compile gpdb on a remote AIX machine, triggered by concourse.
+  # We need to serialize this job to avoid overwhelming workload
+  # on remote machine.
+  - aggregate:
+    - get: gpdb_src
+    - get: gpdb6-centos6-build
+  - task: compile_gpdb_windows_remote
+    file: gpdb_src/concourse/tasks/compile_gpdb_remote_windows.yml
+    image: gpdb6-centos6-build
+    params:
+      REMOTE_HOST: {{remote_host_build}}
+      REMOTE_PORT: {{remote_port_build}}
+      REMOTE_USER: {{remote_user_build}}
+      REMOTE_KEY: {{remote_key_build}}
+  - put: bin_gpdb_clients_windows_rc
+    params:
+      file: "gpdb_artifacts/greenplum-clients-x86_64.msi"
+  - put: bin_windows_gpfdist_pipe_test
+    params:
+      file: "gpdb_artifacts/pipe_win10.exe"
+
+- name: test_gpdb_windows_remote
+  plan:
+  - aggregate:
+    - get: gpdb_src
+      trigger: true
+      passed: [compile_gpdb_windows_remote]
+    - get: gpdb6-centos7-test
+    - get: bin_gpdb_clients_windows_rc
+      passed: [compile_gpdb_windows_remote]
+    - get: bin_windows_gpfdist_pipe_test
+      passed: [compile_gpdb_windows_remote]
+    - get: bin_gpdb
+      resource: bin_gpdb_centos7
+  - put: terraform
+    params:
+      action: create
+      delete_on_failure: true
+      generate_random_name: true
+      terraform_source: gpdb_src/concourse/terraform/
+  - task: run_tests
+    file: gpdb_src/concourse/tasks/windows_remote_test.yml
+    image: gpdb6-centos7-test
+    params:
+      REMOTE_PORT: {{remote_port_test}}
+      REMOTE_USER: {{remote_user_test}}
+      REMOTE_KEY: {{remote_key_test}}
+
+  ensure:
+    put: terraform
+    params:
+      action: destroy
+      env_name_file: terraform/name
+      terraform_source: gpdb_src/concourse/terraform/
+      vars:
+        aws_instance-node-instance_type: t2.micro #t2.micro is ignored in destroy, but aws_instance-node-instance_type is required.
+        aws_ebs_volume_type: standard
+    get_params:
+      action: destroy

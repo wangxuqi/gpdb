@@ -8,8 +8,8 @@ outputs:
 run:
   path: gpdb_src/concourse/scripts/compile_gpdb_remote_windows.bash
 params:
+  OUTPUT_ARTIFACT_DIR: gpdb_artifacts
   REMOTE_HOST:
   REMOTE_PORT:
   REMOTE_USER:
   REMOTE_KEY:
-
