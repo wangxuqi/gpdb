@@ -64,6 +64,7 @@ typedef struct CdbExplain_StatInst
 	int			numPartScanned; /* Number of part tables scanned */
 
 	TuplesortInstrumentation sortstats; /* Sort stats, if this is a Sort node */
+	IncrementalSortInfo incsort_info; /* Incremental Sort stats, if this is a IncrementalSort node */
 	HashInstrumentation hashstats; /* Hash stats, if this is a Hash node */
 	int			bnotes;			/* Offset to beginning of node's extra text */
 	int			enotes;			/* Offset to end of node's extra text */
@@ -849,6 +850,13 @@ cdbexplain_collectStatsFromNode(PlanState *planstate, CdbExplain_SendStatCtx *ct
 
 		si->sortstats = sortstate->sortstats;
 	}
+
+	if (IsA(planstate, IncrementalSortState))
+	{
+		IncrementalSortState *incsortstate = (IncrementalSortState *) planstate;
+		memcpy(&si->incsort_info, &incsortstate->incsort_info, sizeof(IncrementalSortInfo));
+	}
+
 	if (IsA(planstate, HashState))
 	{
 		HashState *hashstate = (HashState *) planstate;
@@ -1169,6 +1177,31 @@ cdbexplain_depositStatsToNode(PlanState *planstate, CdbExplain_RecvStatCtx *ctx)
 		}
 
 		hashstate->shared_info = shared_state;
+	}
+
+	if (IsA(planstate, IncrementalSortState))
+	{
+		IncrementalSortState *incsortstate = (IncrementalSortState *) planstate;
+		SharedIncrementalSortInfo *shared_info;
+
+		size_t size;
+
+		size = offsetof(SharedIncrementalSortInfo, sinfo) +
+			   ctx->nmsgptr * sizeof(IncrementalSortInfo);
+		shared_info = palloc0(size);
+		shared_info->num_workers = ctx->nmsgptr;
+
+		/* Examine the statistics from each qExec. */
+		for (imsgptr = 0; imsgptr < ctx->nmsgptr; imsgptr++)
+		{
+			/* Locate PlanState node's StatInst received from this qExec. */
+			rsh = ctx->msgptrs[imsgptr];
+			rsi = &rsh->inst[ctx->iStatInst];
+
+			memcpy(&shared_info->sinfo[imsgptr], &rsi->incsort_info, sizeof(IncrementalSortInfo));
+		}
+
+		incsortstate->shared_info = shared_info;
 	}
 }								/* cdbexplain_depositStatsToNode */
 

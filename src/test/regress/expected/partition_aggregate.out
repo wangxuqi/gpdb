@@ -10,6 +10,8 @@ SET enable_partitionwise_aggregate TO true;
 SET enable_partitionwise_join TO true;
 -- Disable parallel plans.
 SET max_parallel_workers_per_gather TO 0;
+-- Disable enable_incremental_sort.
+SET enable_incremental_sort to false;
 --
 -- Tests for list partitioned tables.
 --
@@ -1662,6 +1664,7 @@ SELECT x, sum(y), avg(y), count(*) FROM pagg_tab_para GROUP BY x HAVING avg(y) <
 -- Reset parallelism parameters to get partitionwise aggregation plan.
 RESET min_parallel_table_scan_size;
 RESET parallel_setup_cost;
+RESET enable_incremental_sort;
 EXPLAIN (COSTS OFF)
 SELECT x, sum(y), avg(y), count(*) FROM pagg_tab_para GROUP BY x HAVING avg(y) < 7 ORDER BY 1, 2, 3;
                                          QUERY PLAN                                         

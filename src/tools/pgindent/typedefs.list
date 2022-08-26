@@ -1023,6 +1023,12 @@ ImportQual
 IncludeWal
 InclusionOpaque
 IncrementVarSublevelsUp_context
+IncrementalSort
+IncrementalSortExecutionStatus
+IncrementalSortGroupInfo
+IncrementalSortInfo
+IncrementalSortPath
+IncrementalSortState
 Index
 IndexAMProperty
 IndexAmRoutine

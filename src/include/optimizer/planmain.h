@@ -84,6 +84,10 @@ extern Plan *plan_pushdown_tlist(PlannerInfo *root, Plan *plan, List *tlist);   
 
 /* External use of these functions is deprecated: */
 extern Sort *make_sort_from_pathkeys(Plan *lefttree, List *pathkeys, Relids relids);
+extern IncrementalSort *make_incrementalsort_from_pathkeys(Plan *lefttree,
+														   List *pathkeys,
+														   Relids relids,
+														   int nPresortedCols);
 extern Sort *make_sort_from_sortclauses(List *sortcls,
 						   Plan *lefttree);
 extern Agg *make_agg(List *tlist, List *qual,

@@ -358,6 +358,7 @@ max_prepared_transactions = 250		# can be 0 or more
 #enable_parallel_append = on
 #enable_seqscan = on
 #enable_sort = on
+#enable_incremental_sort = on
 #enable_tidscan = on
 #enable_partitionwise_join = off
 #enable_partitionwise_aggregate = off

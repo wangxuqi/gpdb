@@ -17,6 +17,7 @@
 set enable_seqscan=off;
 set enable_bitmapscan=on;
 set enable_indexscan=on;
+set enable_incremental_sort=off;
 
 create schema partition_pruning;
 set search_path to partition_pruning;

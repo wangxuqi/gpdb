@@ -119,6 +119,7 @@
 		"enable_hashagg",
 		"enable_hashagg_disk",
 		"enable_hashjoin",
+		"enable_incremental_sort",
 		"enable_indexonlyscan",
 		"enable_indexscan",
 		"enable_material",

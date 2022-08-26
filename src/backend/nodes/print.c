@@ -559,6 +559,8 @@ plannode_type(Plan *p)
 			return "MATERIAL";
 		case T_Sort:
 			return "SORT";
+		case T_IncrementalSort:
+			return "INCREMENTALSORT";
 		case T_Agg:
 			return "AGG";
 		case T_TupleSplit:

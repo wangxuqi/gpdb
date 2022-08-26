@@ -197,6 +197,7 @@ extern void generate_implied_quals(PlannerInfo *root);
 
 extern PathKeysComparison compare_pathkeys(List *keys1, List *keys2);
 extern bool pathkeys_contained_in(List *keys1, List *keys2);
+extern bool pathkeys_count_contained_in(List *keys1, List *keys2, int *n_common);
 extern Path *get_cheapest_path_for_pathkeys(List *paths, List *pathkeys,
 											Relids required_outer,
 											CostSelector cost_criterion,

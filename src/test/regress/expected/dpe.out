@@ -2930,15 +2930,15 @@ set enable_seqscan=off;
 -- force_explain
 explain (analyze, timing off, summary off)
 select * from pt, t where t.dist = pt.dist and t.tid = pt.ptid order by t.tid, t.sk;
-                                                                QUERY PLAN                                                                 
--------------------------------------------------------------------------------------------------------------------------------------------
+                                                                  QUERY PLAN                                                                   
+-----------------------------------------------------------------------------------------------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)  (cost=14.20..14.35 rows=7 width=24) (actual rows=5 loops=1)
    Merge Key: pt1.ptid, t.sk
-   ->  Sort  (cost=14.20..14.21 rows=3 width=24) (actual rows=2 loops=1)
+   ->  Incremental Sort  (cost=14.20..14.21 rows=2 width=24) (actual rows=2 loops=1)
          Sort Key: pt1.ptid, t.sk
-         Sort Method:  quicksort  Memory: 150kB
-         Executor Memory: 76kB  Segments: 3  Max: 26kB (segment 0)
-         ->  Merge Join  (cost=8.08..14.10 rows=3 width=24) (actual rows=2 loops=1)
+         Presorted Key: pt1.ptid
+         Full-sort Groups: 1  Sort Method: quicksort  Average Memory: 25kB  Peak Memory: 25kB
+         ->  Merge Join  (cost=8.08..14.10 rows=2 width=24) (actual rows=2 loops=1)
                Merge Cond: (pt1.ptid = t.tid)
                Join Filter: (pt1.dist = t.dist)
                ->  Merge Append  (cost=0.85..456.04 rows=36 width=12) (actual rows=3 loops=1)
@@ -2951,9 +2951,10 @@ select * from pt, t where t.dist = pt.dist and t.tid = pt.ptid order by t.tid, t
                      ->  Index Scan using ptdefault_ptid_sk_idx on ptdefault  (cost=0.14..413.33 rows=35 width=12) (actual rows=2 loops=1)
                ->  Sort  (cost=7.22..7.47 rows=33 width=12) (actual rows=19 loops=2)
                      Sort Key: t.tid
-                     Sort Method:  quicksort  Memory: 158kB
+                     Sort Method:  quicksort  Memory: 79kB
+                     Executor Memory: 79kB  Segments: 3  Max: 27kB (segment 1)
                      ->  Partition Selector (selector id: $0)  (cost=0.00..3.98 rows=33 width=12) (actual rows=37 loops=1)
                            ->  Seq Scan on t  (cost=0.00..3.98 rows=33 width=12) (actual rows=37 loops=1)
  Optimizer: Postgres query optimizer
-(22 rows)
+(24 rows)
 
