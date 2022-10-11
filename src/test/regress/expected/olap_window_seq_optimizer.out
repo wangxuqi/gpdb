@@ -4,6 +4,7 @@
 -- Changes here should also be made to olap_window_seq.sql
 -- reduce noise, specifying a precision
 set extra_float_digits=-2;
+set enable_incremental_sort to off;
 -- 1 -- Null window specification -- OVER () --
 select row_number() over (), cn,pn,vn 
 from sale; -- mvd 1->1
@@ -8645,4 +8646,5 @@ EXPLAIN WITH cte as (SELECT *, row_number() over (PARTITION BY date,region) FROM
  Optimizer: Postgres query optimizer
 (29 rows)
 
+set enable_incremental_sort to default;
 -- End of Test

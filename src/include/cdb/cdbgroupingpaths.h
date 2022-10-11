@@ -39,6 +39,7 @@ extern void cdb_create_twostage_distinct_paths(PlannerInfo *root,
 
 extern Path *cdb_prepare_path_for_sorted_agg(PlannerInfo *root,
 											 bool is_sorted,
+											 int presorted_keys,
 											 RelOptInfo *rel,
 											 Path *subpath,
 											 PathTarget *target,

@@ -2313,6 +2313,7 @@ fetch_single_dqa_info(PlannerInfo *root,
 Path *
 cdb_prepare_path_for_sorted_agg(PlannerInfo *root,
 								bool is_sorted,
+								int presorted_keys,
 								/* args corresponding to create_sort_path */
 								RelOptInfo *rel,
 								Path *subpath,
@@ -2351,11 +2352,29 @@ cdb_prepare_path_for_sorted_agg(PlannerInfo *root,
 	{
 		if (!is_sorted)
 		{
-			subpath = (Path *) create_sort_path(root,
-												rel,
-												subpath,
-												group_pathkeys,
-												-1.0);
+			/*
+			 * No presorted keys or incremental sort disabled, just perform a
+			 * complete sort.
+			 */
+			if (presorted_keys == 0 || !enable_incremental_sort)
+				subpath = (Path *) create_sort_path(root,
+													rel,
+													subpath,
+													group_pathkeys,
+													-1.0);
+			else
+			{
+				/*
+				 * Since we have presorted keys and incremental sort is
+				 * enabled, just use incremental sort.
+				 */
+				subpath = (Path *) create_incremental_sort_path(root,
+																rel,
+																subpath,
+																group_pathkeys,
+																presorted_keys,
+																-1.0);
+			}
 		}
 		return subpath;
 	}
@@ -2390,11 +2409,29 @@ cdb_prepare_path_for_sorted_agg(PlannerInfo *root,
 			subpath = cdbpath_create_motion_path(root, subpath, NIL,
 												 false, locus);
 
-		subpath = (Path *) create_sort_path(root,
-											rel,
-											subpath,
-											group_pathkeys,
-											-1.0);
+		/*
+		 * No presorted keys or incremental sort disabled, just perform a
+		 * complete sort.
+		 */
+		if (presorted_keys == 0 || !enable_incremental_sort)
+			subpath = (Path *) create_sort_path(root,
+												rel,
+												subpath,
+												group_pathkeys,
+												-1.0);
+		else
+		{
+			/*
+			 * Since we have presorted keys and incremental sort is
+			 * enabled, just use incremental sort.
+			 */
+			subpath = (Path *) create_incremental_sort_path(root,
+															rel,
+															subpath,
+															group_pathkeys,
+															presorted_keys,
+															-1.0);
+		}
 
 		if (!CdbPathLocus_IsPartitioned(locus))
 			subpath = cdbpath_create_motion_path(root, subpath,

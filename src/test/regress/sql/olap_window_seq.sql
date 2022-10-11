@@ -5,6 +5,7 @@
 
 -- reduce noise, specifying a precision
 set extra_float_digits=-2;
+set enable_incremental_sort to off;
 
 -- start_ignore
 create schema olap_window_seq;
@@ -1727,4 +1728,5 @@ EXPLAIN WITH cte as (SELECT *, row_number() over (PARTITION BY date,region) FROM
 -- When there is a disjunct in the filter predicates, it is not possible to push down either into the window function.
 EXPLAIN WITH cte as (SELECT *, row_number() over (PARTITION BY date,region) FROM window_part_sales) SELECT * FROM cte WHERE date > '2011-03-01' OR region = 'usa';
 
+set enable_incremental_sort to default;
 -- End of Test

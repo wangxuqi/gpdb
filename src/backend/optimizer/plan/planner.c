@@ -4925,6 +4925,7 @@ consider_groupingsets_paths(PlannerInfo *root,
 	/* Redistribute the input if needed. */
 	path = cdb_prepare_path_for_sorted_agg(root,
 										   true, /* is_sorted */
+										   0,
 										   grouped_rel,
 										   path,
 										   path->pathtarget,
@@ -5160,14 +5161,17 @@ create_window_paths(PlannerInfo *root,
 	/*
 	 * Consider computing window functions starting from the existing
 	 * cheapest-total path (which will likely require a sort) as well as any
-	 * existing paths that satisfy root->window_pathkeys (which won't).
+	 * existing paths that satisfy  or partially satisfy root->window_pathkeys (which won't).
 	 */
 	foreach(lc, input_rel->pathlist)
 	{
 		Path	   *path = (Path *) lfirst(lc);
+		int			presorted_keys;
 
 		if (path == input_rel->cheapest_total_path ||
-			pathkeys_contained_in(root->window_pathkeys, path->pathkeys))
+			pathkeys_count_contained_in(root->window_pathkeys, path->pathkeys,
+										&presorted_keys) ||
+			presorted_keys > 0)
 			create_one_window_path(root,
 								   window_rel,
 								   path,
@@ -5242,11 +5246,16 @@ create_one_window_path(PlannerInfo *root,
 	{
 		WindowClause *wc = lfirst_node(WindowClause, l);
 		List	   *window_pathkeys;
+		int			presorted_keys;
+		bool		is_sorted;
 
 		window_pathkeys = make_pathkeys_for_window(root,
 												   wc,
 												   root->processed_tlist);
 
+		is_sorted = pathkeys_count_contained_in(window_pathkeys,
+												path->pathkeys,
+												&presorted_keys);
 		/*
 		 * Unless the PARTITION BY in the window happens to match the
 		 * current distribution, we need a motion. Each partition
@@ -5260,7 +5269,8 @@ create_one_window_path(PlannerInfo *root,
 		 * This is the same logic that is used for sorted Aggregates.
 		 */
 		path = cdb_prepare_path_for_sorted_agg(root,
-											   pathkeys_contained_in(window_pathkeys, path->pathkeys),
+											   is_sorted,
+											   presorted_keys,
 											   window_rel,
 											   path,
 											   path->pathtarget,
@@ -5415,6 +5425,7 @@ create_distinct_paths(PlannerInfo *root,
 
 				path = cdb_prepare_path_for_sorted_agg(root,
 													   true, /* is_sorted */
+													   0,
 													   distinct_rel,
 													   path, path->pathtarget,
 													   needed_pathkeys,
@@ -5452,6 +5463,7 @@ create_distinct_paths(PlannerInfo *root,
 
 		path = cdb_prepare_path_for_sorted_agg(root,
 											   pathkeys_contained_in(needed_pathkeys, cheapest_input_path->pathkeys),
+											   0,
 											   distinct_rel,
 											   cheapest_input_path,
 											   cheapest_input_path->pathtarget,
@@ -7285,6 +7297,7 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 				 */
 				path = cdb_prepare_path_for_sorted_agg(root,
 													   is_sorted,
+													   0,
 													   grouped_rel,
 													   path,
 													   path->pathtarget,
@@ -7383,6 +7396,7 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 
 				path = cdb_prepare_path_for_sorted_agg(root,
 													   is_sorted,
+													   0,
 													   grouped_rel,
 													   path,
 													   path->pathtarget,
