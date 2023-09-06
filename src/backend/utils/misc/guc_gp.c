@@ -133,7 +133,6 @@ bool		Debug_appendonly_print_visimap = false;
 bool		Debug_appendonly_print_compaction = false;
 bool		Debug_bitmap_print_insert = false;
 bool		Test_print_direct_dispatch_info = false;
-bool        Test_print_prefetch_joinqual = false;
 bool		Test_copy_qd_qe_split = false;
 bool		gp_permit_relation_node_change = false;
 int			gp_max_local_distributed_cache = 1024;
@@ -325,6 +324,7 @@ bool		optimizer_enable_dml_constraints;
 bool		optimizer_enable_coordinator_only_queries;
 bool		optimizer_enable_hashjoin;
 bool		optimizer_enable_dynamictablescan;
+bool		optimizer_enable_dynamicindexonlyscan;
 bool		optimizer_enable_indexscan;
 bool		optimizer_enable_indexonlyscan;
 bool		optimizer_enable_tablescan;
@@ -422,7 +422,7 @@ char	   *gp_default_storage_options = NULL;
 /* Fall back to using zstd if quicklz compresstpye specified */
 bool		gp_quicklz_fallback = false;
 
-int			writable_external_table_bufsize = 64;
+int			writable_external_table_bufsize = 1024;
 
 bool		gp_external_enable_filter_pushdown = true;
 
@@ -1418,17 +1418,6 @@ struct config_bool ConfigureNamesBool_gp[] =
 	},
 
 	{
-		{"test_print_prefetch_joinqual", PGC_SUSET, DEVELOPER_OPTIONS,
-			gettext_noop("For testing purposes, print information about if we prefetch join qual."),
-			NULL,
-			GUC_SUPERUSER_ONLY | GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
-		},
-		&Test_print_prefetch_joinqual,
-		false,
-		NULL, NULL, NULL
-	},
-
-	{
 		{"test_copy_qd_qe_split", PGC_SUSET, DEVELOPER_OPTIONS,
 			gettext_noop("For testing purposes, print information about which columns are parsed in QD and which in QE."),
 			NULL,
@@ -2221,6 +2210,17 @@ struct config_bool ConfigureNamesBool_gp[] =
 	},
 
 	{
+		{"optimizer_enable_dynamicindexonlyscan", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables the optimizer's use of plans with dynamic index only scan."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&optimizer_enable_dynamicindexonlyscan,
+		true,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"optimizer_enable_indexscan", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the optimizer's use of plans with index scan."),
 			NULL,
@@ -2255,7 +2255,7 @@ struct config_bool ConfigureNamesBool_gp[] =
 
 	{
 		{"optimizer_enable_hashagg", PGC_USERSET, QUERY_TUNING_METHOD,
-			gettext_noop("Enables Pivotal Optimizer (GPORCA) to use hash aggregates."),
+			gettext_noop("Enables GPORCA to use hash aggregates."),
 			NULL,
 			GUC_NOT_IN_SAMPLE
 		},
@@ -2266,7 +2266,7 @@ struct config_bool ConfigureNamesBool_gp[] =
 
 	{
 		{"optimizer_enable_groupagg", PGC_USERSET, QUERY_TUNING_METHOD,
-			gettext_noop("Enables Pivotal Optimizer (GPORCA) to use group aggregates."),
+			gettext_noop("Enables GPORCA to use group aggregates."),
 			NULL,
 			GUC_NOT_IN_SAMPLE
 		},
@@ -2326,7 +2326,7 @@ struct config_bool ConfigureNamesBool_gp[] =
 			GUC_NOT_IN_SAMPLE
 		},
 		&optimizer_force_multistage_agg,
-		true,
+		false,
 		NULL, NULL, NULL
 	},
 
@@ -2597,7 +2597,7 @@ struct config_bool ConfigureNamesBool_gp[] =
 
 	{
 		{"optimizer_enable_dml", PGC_USERSET, QUERY_TUNING_METHOD,
-			gettext_noop("Enable DML plans in Pivotal Optimizer (GPORCA)."),
+			gettext_noop("Enable DML plans in GPORCA."),
 			NULL,
 			GUC_NOT_IN_SAMPLE
 		},
@@ -2778,7 +2778,7 @@ struct config_bool ConfigureNamesBool_gp[] =
 	},
 
 	{
-		{"gp_resource_group_bypass", PGC_SUSET, RESOURCES,
+		{"gp_resource_group_bypass", PGC_USERSET, RESOURCES,
 			gettext_noop("If the value is true, the query in this session will not be limited by resource group."),
 			NULL
 		},
@@ -2984,6 +2984,16 @@ struct config_bool ConfigureNamesBool_gp[] =
 		false,
 		NULL, NULL, NULL
 	},
+	{
+		{"gp_detect_data_correctness", PGC_USERSET, UNGROUPED,
+		gettext_noop("Detect if the current partitioning of the table or data distribution is correct."),
+		NULL,
+		GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
+		},
+		&gp_detect_data_correctness,
+		false,
+		NULL, NULL, NULL
+	},
 
 	/* End-of-list marker */
 	{
@@ -3022,7 +3032,7 @@ struct config_int ConfigureNamesInt_gp[] =
 			GUC_UNIT_KB | GUC_NOT_IN_SAMPLE
 		},
 		&writable_external_table_bufsize,
-		64, 32, 131072,
+		1024, 32, 131072,
 		NULL, NULL, NULL
 	},
 
@@ -3182,6 +3192,17 @@ struct config_int ConfigureNamesInt_gp[] =
 		},
 		&gp_workfile_limit_per_query,
 		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"gp_workfile_compression_overhead_limit", PGC_USERSET, RESOURCES,
+			gettext_noop("The overhead memory (kB) limit for all compressed workfiles of a single workfile_set."),
+			gettext_noop("0 for no limit. Once the limit is hit, the following files will not be compressed."),
+			GUC_UNIT_KB
+		},
+		&gp_workfile_compression_overhead_limit,
+		2048 * 1024, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
 
@@ -4129,6 +4150,18 @@ struct config_int ConfigureNamesInt_gp[] =
 		NULL, NULL, NULL
 	},
 
+	/**
+	 * In previous code, the default value of dtx_phase2_retry_second is 60s.
+	 * If the command cannot be dispatched successfully within this period, a PANIC happens
+	 * (Details are in doNotifyingCommitPrepared()).
+	 * Then the postmaster will restart and goes into recovery process.
+	 *
+	 * So, a small value may make user confused: why my postmaster restarts; but a big value
+	 * is also not good: the txn keeps retrying in dispatch, it may block other txns.
+	 *
+	 * After a long discussion: https://github.com/greenplum-db/gpdb/pull/15632, we choose a
+	 * compromise default value: 600s(10min) here.
+	 */
 	{
 		{"dtx_phase2_retry_second", PGC_SUSET, GP_ARRAY_TUNING,
 			gettext_noop("Maximum time for which coordinator tries to finish a prepared transaction"),
@@ -4138,7 +4171,7 @@ struct config_int ConfigureNamesInt_gp[] =
 			GUC_SUPERUSER_ONLY |  GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE | GUC_UNIT_S
 		},
 		&dtx_phase2_retry_second,
-		60, 0, INT_MAX,
+		600, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
 
@@ -4406,17 +4439,6 @@ struct config_string ConfigureNamesString_gp[] =
 		&memory_profiler_query_id,
 		"none",
 		NULL, NULL, NULL
-	},
-
-	{
-		{"gp_session_role", PGC_BACKEND, COMPAT_OPTIONS_PREVIOUS,
-			gettext_noop("Alias of gp_role for compatibility."),
-			gettext_noop("Valid values are DISPATCH, EXECUTE, and UTILITY."),
-			GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
-		},
-		&gp_role_string,
-		"undefined",
-		check_gp_role, assign_gp_role, show_gp_role
 	},
 
 	{

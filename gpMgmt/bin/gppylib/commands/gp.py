@@ -52,6 +52,11 @@ DEFAULT_COORDINATOR_NUM_WORKERS=16
 #max batch size of thread pool on coordinator
 MAX_COORDINATOR_NUM_WORKERS=64
 
+# Maximum replay lag (in GBs) allowed on mirror when rebalancing the segments
+# The default value for ALLOWED_REPLAY_LAG has been decided to be 10 GBs as mirror
+# took 5 mins to replay 10 GB lag on a local demo cluster.
+ALLOWED_REPLAY_LAG = 10
+
 # Application name used by the pg_rewind instance that gprecoverseg starts
 # during incremental recovery. gpstate uses this to figure out when incremental
 # recovery is active.
@@ -999,7 +1004,7 @@ class GpSegSetupRecovery(Command):
     """
     def __init__(self, name, confinfo, logdir, batchSize, verbose, remoteHost, forceoverwrite):
         cmdStr = _get_cmd_for_recovery_wrapper('gpsegsetuprecovery', confinfo, logdir, batchSize, verbose,forceoverwrite)
-        Command.__init__(self, name, cmdStr, REMOTE, remoteHost)
+        Command.__init__(self, name, cmdStr, REMOTE, remoteHost, start_new_session=True)
 
 
 class GpSegRecovery(Command):
@@ -1008,7 +1013,7 @@ class GpSegRecovery(Command):
     """
     def __init__(self, name, confinfo, logdir, batchSize, verbose, remoteHost, forceoverwrite, era):
         cmdStr = _get_cmd_for_recovery_wrapper('gpsegrecovery', confinfo, logdir, batchSize, verbose, forceoverwrite, era)
-        Command.__init__(self, name, cmdStr, REMOTE, remoteHost)
+        Command.__init__(self, name, cmdStr, REMOTE, remoteHost, start_new_session=True)
 
 
 def _get_cmd_for_recovery_wrapper(wrapper_filename, confinfo, logdir, batchSize, verbose, forceoverwrite, era=None):
@@ -1167,7 +1172,7 @@ def distribute_tarball(queue,list,tarball):
             hostname = db.getSegmentHostName()
             datadir = db.getSegmentDataDirectory()
             (head,tail)=os.path.split(datadir)
-            rsync_cmd=Rsync(name="copy coordinator",srcFile=tarball,dstHost=hostname,dstFile=head)
+            rsync_cmd=Rsync(name="copy coordinator",srcFile=tarball,dstHost=hostname,dstFile=head, ignore_times=True, whole_file=True)
             queue.addCommand(rsync_cmd)
         queue.join()
         queue.check_results()

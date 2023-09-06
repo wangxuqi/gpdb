@@ -120,6 +120,10 @@ typedef struct
 #define HOST_NAME_SIZE 100
 #define FDIST_TIMEOUT  408
 #define MAX_TRY_WAIT_TIME 64
+
+#define DEFAULT_TCP_KEEPALIVE_TIME 7200
+#define DEFAULT_TCP_KEEPALIVE_INTVL 75
+#define DEFAULT_TCP_KEEPALIVE_PROBES 9
 /*
  * SSL support GUCs - should be added soon. Until then we will use stubs
  *
@@ -1327,10 +1331,28 @@ url_curl_fopen(char *url, bool forwrite, extvar_t *ev, CopyState pstate)
 		set_httpheader(file, "X-GP-CSVOPT", ev->GP_CSVOPT);
 		set_httpheader(file, "X-GP_SEG_PG_CONF", ev->GP_SEG_PG_CONF);
 		set_httpheader(file, "X-GP_SEG_DATADIR", ev->GP_SEG_DATADIR);
+		set_httpheader(file, "X-GP_SEG_LOGDIR", ev->GP_SEG_LOGDIR);
 		set_httpheader(file, "X-GP-DATABASE", ev->GP_DATABASE);
 		set_httpheader(file, "X-GP-USER", ev->GP_USER);
 		set_httpheader(file, "X-GP-SEG-PORT", ev->GP_SEG_PORT);
 		set_httpheader(file, "X-GP-SESSION-ID", ev->GP_SESSION_ID);
+#if LIBCURL_VERSION_NUM >= 0x071900
+		int	libcurl_tcp_keepalives_idle = DEFAULT_TCP_KEEPALIVE_TIME;
+		int	libcurl_tcp_keepalives_interval = DEFAULT_TCP_KEEPALIVE_INTVL;
+		int	libcurl_tcp_keepalives_count = DEFAULT_TCP_KEEPALIVE_PROBES;
+		if (tcp_keepalives_idle != 0)
+			libcurl_tcp_keepalives_idle = tcp_keepalives_idle;
+		if (tcp_keepalives_interval != 0)
+			libcurl_tcp_keepalives_interval = tcp_keepalives_interval;
+		if (tcp_keepalives_count != 0)
+			libcurl_tcp_keepalives_count = tcp_keepalives_count;
+		/* enable TCP keep-alive for this transfer, libcurl_tcp_keepalives_count probes */
+		curl_easy_setopt(file->curl->handle, CURLOPT_TCP_KEEPALIVE, (long)libcurl_tcp_keepalives_count);
+		/* keep-alive idle time to libcurl_tcp_keepalives_idle seconds */
+		curl_easy_setopt(file->curl->handle, CURLOPT_TCP_KEEPIDLE, (long)libcurl_tcp_keepalives_idle);
+		/* interval time between keep-alive probes: libcurl_tcp_keepalives_interval seconds */
+		curl_easy_setopt(file->curl->handle, CURLOPT_TCP_KEEPINTVL, (long)libcurl_tcp_keepalives_interval);
+#endif
 	}
 		
 	{
@@ -1364,7 +1386,6 @@ url_curl_fopen(char *url, bool forwrite, extvar_t *ev, CopyState pstate)
 
 		/* cert is stored PEM coded in file... */
 		CURL_EASY_SETOPT(file->curl->handle, CURLOPT_SSLCERTTYPE, "PEM");
-
 		/* set the cert for client authentication */
 		if (extssl_cert != NULL)
 		{
@@ -1372,12 +1393,12 @@ url_curl_fopen(char *url, bool forwrite, extvar_t *ev, CopyState pstate)
 			snprintf(extssl_cer_full, MAXPGPATH, "%s/%s", DataDir, extssl_cert);
 
 			if (!is_file_exists(extssl_cer_full))
-				ereport(ERROR,
-						(errcode_for_file_access(),
-						 errmsg("could not open certificate file \"%s\": %m",
-								extssl_cer_full)));
-
-			CURL_EASY_SETOPT(file->curl->handle, CURLOPT_SSLCERT, extssl_cer_full);
+			{
+				elog(LOG, "could not open certificate file \"%s\": %m", extssl_cer_full);
+				CURL_EASY_SETOPT(file->curl->handle, CURLOPT_SSLCERT, NULL);
+			}
+			else
+				CURL_EASY_SETOPT(file->curl->handle, CURLOPT_SSLCERT, extssl_cer_full);
 		}
 
 		/* set the key passphrase */
@@ -1393,12 +1414,12 @@ url_curl_fopen(char *url, bool forwrite, extvar_t *ev, CopyState pstate)
 			snprintf(extssl_key_full, MAXPGPATH, "%s/%s", DataDir, extssl_key);
 
 			if (!is_file_exists(extssl_key_full))
-				ereport(ERROR,
-						(errcode_for_file_access(),
-						 errmsg("could not open private key file \"%s\": %m",
-								extssl_key_full)));
-
-			CURL_EASY_SETOPT(file->curl->handle, CURLOPT_SSLKEY, extssl_key_full);
+			{
+				elog(LOG, "could not open private key file \"%s\": %m", extssl_key_full);
+				CURL_EASY_SETOPT(file->curl->handle, CURLOPT_SSLKEY, NULL);
+			}
+			else
+				CURL_EASY_SETOPT(file->curl->handle, CURLOPT_SSLKEY, extssl_key_full);
 		}
 
 		/* set the file with the CA certificates, for validating the server */
@@ -1408,12 +1429,22 @@ url_curl_fopen(char *url, bool forwrite, extvar_t *ev, CopyState pstate)
 			snprintf(extssl_cas_full, MAXPGPATH, "%s/%s", DataDir, extssl_ca);
 
 			if (!is_file_exists(extssl_cas_full))
-				ereport(ERROR,
-						(errcode_for_file_access(),
-						 errmsg("could not open private key file \"%s\": %m",
-								extssl_cas_full)));
-
-			CURL_EASY_SETOPT(file->curl->handle, CURLOPT_CAINFO, extssl_cas_full);
+			{
+				if (verify_gpfdists_cert)
+				{
+					ereport(ERROR,
+							(errcode_for_file_access(),
+							errmsg("could not open CA certificate file \"%s\": %m",
+									extssl_cas_full)));
+				}
+				else 
+				{
+					elog(LOG, "could not open CA certificate file \"%s\": %m", extssl_cas_full);
+					CURL_EASY_SETOPT(file->curl->handle, CURLOPT_CAINFO, NULL);
+				}
+			}
+			else
+				CURL_EASY_SETOPT(file->curl->handle, CURLOPT_CAINFO, extssl_cas_full);
 		}
 
 		/* set cert verification */

@@ -4,6 +4,8 @@ DROP ROLE IF EXISTS role1_cpu_test;
 DROP ROLE IF EXISTS role2_cpu_test;
 DROP RESOURCE GROUP rg1_cpu_test;
 DROP RESOURCE GROUP rg2_cpu_test;
+DROP VIEW IF EXISTS busy;
+DROP TABLE IF EXISTS bigtable;
 
 CREATE LANGUAGE plpython3u;
 -- end_ignore
@@ -37,40 +39,47 @@ $$ LANGUAGE plpython3u;
 -- return true if the practical value is close to the expected value.
 CREATE OR REPLACE FUNCTION verify_cpu_usage(groupname TEXT, expect_cpu_usage INT, err_rate INT)
 RETURNS BOOL AS $$
-    import json
-    import functools
-
     all_info = plpy.execute('''
         SELECT sample::json->'{name}' AS cpu FROM cpu_usage_samples
     '''.format(name=groupname))
-    usage = float(all_info[0]['cpu'])
+
+    results = [float(_['cpu']) for _ in all_info]
+    usage = sum(results) / len(results)
 
     return abs(usage - expect_cpu_usage) <= err_rate
 $$ LANGUAGE plpython3u;
 
-CREATE OR REPLACE FUNCTION busy() RETURNS void AS $$
-    import os
-    import signal
+CREATE TABLE bigtable AS
+    SELECT i AS c1, 'abc' AS c2
+    FROM generate_series(1,50000) i distributed randomly;
 
-    n = 15
-    for i in range(n):
-        if os.fork() == 0:
-			# children must quit without invoking the atexit hooks
-            signal.signal(signal.SIGINT,  lambda a, b: os._exit(0))
-            signal.signal(signal.SIGQUIT, lambda a, b: os._exit(0))
-            signal.signal(signal.SIGTERM, lambda a, b: os._exit(0))
-
-            # generate pure cpu load
-            while True:
-                pass
-
-    os.wait()
+CREATE OR REPLACE FUNCTION complex_compute(i int)
+RETURNS int AS $$
+    results = 1
+    for j in range(1, 10000 + i):
+        results = (results * j) % 35969
+    return results
 $$ LANGUAGE plpython3u;
+
+CREATE VIEW busy AS
+    WITH t1 as (select random(), complex_compute(c1) from bigtable),
+    t2 as (select random(), complex_compute(c1) from bigtable),
+    t3 as (select random(), complex_compute(c1) from bigtable),
+    t4 as (select random(), complex_compute(c1) from bigtable),
+    t5 as (select random(), complex_compute(c1) from bigtable)
+    SELECT count(*)
+    FROM
+    t1, t2, t3, t4, t5;
+
 
 CREATE VIEW cancel_all AS
     SELECT pg_cancel_backend(pid)
     FROM pg_stat_activity
-    WHERE query LIKE 'SELECT * FROM % WHERE busy%';
+    WHERE query LIKE 'SELECT * FROM busy%';
+
+-- The test cases for the value of gp_resource_group_cpu_limit equals 0.9, 
+-- do not change it during the test.
+show gp_resource_group_cpu_limit;
 
 -- create two resource groups
 CREATE RESOURCE GROUP rg1_cpu_test WITH (concurrency=5, cpu_max_percent=-1, cpu_weight=100);
@@ -88,8 +97,10 @@ ALTER RESOURCE GROUP admin_group SET cpu_max_percent 1;
 -- create two roles and assign them to above groups
 CREATE ROLE role1_cpu_test RESOURCE GROUP rg1_cpu_test;
 CREATE ROLE role2_cpu_test RESOURCE GROUP rg2_cpu_test;
-GRANT ALL ON FUNCTION busy() TO role1_cpu_test;
-GRANT ALL ON FUNCTION busy() TO role2_cpu_test;
+GRANT ALL ON FUNCTION complex_compute(int) TO role1_cpu_test;
+GRANT ALL ON FUNCTION complex_compute(int) TO role2_cpu_test;
+GRANT ALL ON busy TO role1_cpu_test;
+GRANT ALL ON busy TO role2_cpu_test;
 
 -- prepare parallel queries in the two groups
 10: SET ROLE TO role1_cpu_test;
@@ -110,11 +121,11 @@ GRANT ALL ON FUNCTION busy() TO role2_cpu_test;
 -- on empty load the cpu usage shall be 0%
 --
 
-10&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-11&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-12&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-13&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-14&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
+10&: SELECT * FROM busy;
+11&: SELECT * FROM busy;
+12&: SELECT * FROM busy;
+13&: SELECT * FROM busy;
+14&: SELECT * FROM busy;
 
 -- start_ignore
 -- Gather CPU usage statistics into cpu_usage_samples
@@ -176,17 +187,17 @@ SELECT * FROM cancel_all;
 -- - rg2_cpu_test gets 90% * 2/3 => 60%;
 --
 
-10&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-11&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-12&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-13&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-14&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
+10&: SELECT * FROM busy;
+11&: SELECT * FROM busy;
+12&: SELECT * FROM busy;
+13&: SELECT * FROM busy;
+14&: SELECT * FROM busy;
 
-20&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-21&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-22&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-23&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-24&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
+20&: SELECT * FROM busy;
+21&: SELECT * FROM busy;
+22&: SELECT * FROM busy;
+23&: SELECT * FROM busy;
+24&: SELECT * FROM busy;
 
 -- start_ignore
 TRUNCATE TABLE cpu_usage_samples;
@@ -273,14 +284,14 @@ ALTER RESOURCE GROUP rg2_cpu_test set cpu_max_percent 20;
 -- a group should not burst to use all the cpu usage
 -- when it's the only one with running queries.
 --
--- so the cpu usage shall be 10%
+-- so the cpu usage shall be 0.9 * 10%
 --
 
-10&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-11&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-12&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-13&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-14&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
+10&: SELECT * FROM busy;
+11&: SELECT * FROM busy;
+12&: SELECT * FROM busy;
+13&: SELECT * FROM busy;
+14&: SELECT * FROM busy;
 
 -- start_ignore
 1:TRUNCATE TABLE cpu_usage_samples;
@@ -308,7 +319,7 @@ ALTER RESOURCE GROUP rg2_cpu_test set cpu_max_percent 20;
 -- end_ignore
 
 -- verify it
-1:SELECT verify_cpu_usage('rg1_cpu_test', 10, 2);
+1:SELECT verify_cpu_usage('rg1_cpu_test', 9, 2);
 
 -- start_ignore
 1:SELECT * FROM cancel_all;
@@ -338,21 +349,21 @@ ALTER RESOURCE GROUP rg2_cpu_test set cpu_max_percent 20;
 --
 -- rg1_cpu_test:rg2_cpu_test is 10:20, so:
 --
--- - rg1_cpu_test gets 10%;
--- - rg2_cpu_test gets 20%;
+-- - rg1_cpu_test gets 0.9 * 10%;
+-- - rg2_cpu_test gets 0.9 * 20%;
 --
 
-10&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-11&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-12&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-13&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-14&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
+10&: SELECT * FROM busy;
+11&: SELECT * FROM busy;
+12&: SELECT * FROM busy;
+13&: SELECT * FROM busy;
+14&: SELECT * FROM busy;
 
-20&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-21&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-22&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-23&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
-24&: SELECT * FROM gp_dist_random('gp_id') WHERE busy() IS NULL;
+20&: SELECT * FROM busy;
+21&: SELECT * FROM busy;
+22&: SELECT * FROM busy;
+23&: SELECT * FROM busy;
+24&: SELECT * FROM busy;
 
 -- start_ignore
 1:TRUNCATE TABLE cpu_usage_samples;
@@ -379,8 +390,8 @@ ALTER RESOURCE GROUP rg2_cpu_test set cpu_max_percent 20;
 1:SELECT pg_sleep(1.7);
 -- end_ignore
 
-1:SELECT verify_cpu_usage('rg1_cpu_test', 10, 2);
-1:SELECT verify_cpu_usage('rg2_cpu_test', 20, 2);
+1:SELECT verify_cpu_usage('rg1_cpu_test', 9, 2);
+1:SELECT verify_cpu_usage('rg2_cpu_test', 18, 2);
 
 -- start_ignore
 1:SELECT * FROM cancel_all;
@@ -417,8 +428,10 @@ ALTER RESOURCE GROUP rg2_cpu_test set cpu_max_percent 20;
 2:ALTER RESOURCE GROUP admin_group SET cpu_max_percent 10;
 
 -- cleanup
-2:REVOKE ALL ON FUNCTION busy() FROM role1_cpu_test;
-2:REVOKE ALL ON FUNCTION busy() FROM role2_cpu_test;
+2:REVOKE ALL ON FUNCTION complex_compute(int) FROM role1_cpu_test;
+2:REVOKE ALL ON FUNCTION complex_compute(int) FROM role2_cpu_test;
+2:REVOKE ALL ON busy FROM role1_cpu_test;
+2:REVOKE ALL ON busy FROM role2_cpu_test;
 2:DROP ROLE role1_cpu_test;
 2:DROP ROLE role2_cpu_test;
 2:DROP RESOURCE GROUP rg1_cpu_test;

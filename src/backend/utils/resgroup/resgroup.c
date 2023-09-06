@@ -274,6 +274,7 @@ static void cpusetOperation(char *cpuset1,
 							int len,
 							bool sub);
 
+
 #ifdef USE_ASSERT_CHECKING
 static bool selfHasGroup(void);
 static bool selfHasSlot(void);
@@ -413,7 +414,7 @@ initCgroup(void)
 
 	bool probe_result = cgroupOpsRoutine->probecgroup();
 	if (!probe_result)
-		elog(ERROR, "The control group is not well configured, please check your"
+		elog(ERROR, "The control group is not well configured, please check your "
 					"system configuration.");
 
 	cgroupOpsRoutine->checkcgroup();
@@ -493,6 +494,12 @@ InitResGroups(void)
 		Assert(group != NULL);
 
 		cgroupOpsRoutine->createcgroup(groupId);
+
+		if (caps.io_limit != NIL)
+		{
+			cgroupOpsRoutine->setio(groupId, caps.io_limit);
+			cgroupOpsRoutine->freeio(caps.io_limit);
+		}
 
 		if (CpusetIsEmpty(caps.cpuset))
 		{
@@ -796,6 +803,11 @@ ResGroupAlterOnCommit(const ResourceGroupCallbackContext *callbackCtx)
 		{
 			wakeupSlots(group, true);
 		}
+		else if (callbackCtx->limittype == RESGROUP_LIMIT_TYPE_IO_LIMIT)
+		{
+			cgroupOpsRoutine->setio(callbackCtx->groupid, callbackCtx->caps.io_limit);
+		}
+
 		/* reset default group if cpuset has changed */
 		if (strcmp(callbackCtx->oldCaps.cpuset, callbackCtx->caps.cpuset) &&
 			gp_resource_group_enable_cgroup_cpuset)
@@ -963,6 +975,10 @@ createGroup(Oid groupId, const ResGroupCaps *caps)
 
 	group->groupId = groupId;
 	group->caps = *caps;
+
+	/* remove local pointers */
+	group->caps.io_limit = NIL;
+
 	group->nRunning = 0;
 	group->nRunningBypassed = 0;
 	ProcQueueInit(&group->waitProcs);
@@ -1353,7 +1369,7 @@ addTotalQueueDuration(ResGroupData *group)
 	if (group == NULL)
 		return;
 
-	group->totalQueuedTimeMs += (groupWaitEnd - groupWaitEnd);
+	group->totalQueuedTimeMs += (groupWaitEnd - groupWaitStart);
 }
 
 /*
@@ -1679,6 +1695,10 @@ SwitchResGroupOnSegment(const char *buf, int len)
 
 		Assert(bypassedGroup != NULL);
 
+		/* Add into cgroup */
+		cgroupOpsRoutine->attachcgroup(bypassedGroup->groupId, MyProcPid,
+									   caps.cpuMaxPercent == CPU_MAX_PERCENT_DISABLED);
+
 		return;
 	}
 
@@ -1840,6 +1860,7 @@ waitOnGroup(ResGroupData *group, bool isMoveQuery)
 	PG_END_TRY();
 
 	groupAwaited = NULL;
+	groupWaitEnd = GetCurrentTimestamp();
 
 	/* reset ps status */
 	if (update_process_title)
@@ -3548,19 +3569,7 @@ ResGroupMoveQuery(int sessionId, Oid groupId, const char *groupName)
 				   sessionId,
 				   quote_literal_cstr(groupName));
 
-	PG_TRY();
-	{
-		CdbDispatchCommand(cmd, 0, NULL);
-	}
-	PG_CATCH();
-	{
-		/*
-		 * we don't have proper mechanics to cancel group move, so just warn
-		 * about something wrong on dispatching stage
-		 */
-		elog(WARNING, "cannot dispatch group move command");
-	}
-	PG_END_TRY();
+	CdbDispatchCommand(cmd, 0, NULL);
 }
 
 /*

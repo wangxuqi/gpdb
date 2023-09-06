@@ -2025,14 +2025,17 @@ cdbpath_motion_for_join(PlannerInfo *root,
 			CdbPathLocus_MakeReplicated(&large_rel->move_to,
 										CdbPathLocus_NumSegments(small_rel->locus));
 
-		/* Last resort: Move both rels to a single qExec. */
-		else
+		/* Last resort: Move both rels to a single qExec
+		 * only if there is no wts on either rels*/
+		else if (!outer.has_wts && !inner.has_wts)
 		{
 			int numsegments = CdbPathLocus_CommonSegments(outer.locus,
 														  inner.locus);
 			CdbPathLocus_MakeSingleQE(&outer.move_to, numsegments);
 			CdbPathLocus_MakeSingleQE(&inner.move_to, numsegments);
 		}
+		else
+			goto fail;
 	}							/* partitioned */
 
 	/*
@@ -2413,12 +2416,6 @@ create_motion_path_for_upddel(PlannerInfo *root, Index rti, GpPolicy *policy,
 			return subpath;
 		else
 		{
-			/* GPDB_96_MERGE_FIXME: avoid creating the Explicit Motion in
-			 * simple cases, where all the input data is already on the
-			 * same segment.
-			 *
-			 * Is "strewn" correct here? Can we do better?
-			 */
 			CdbPathLocus_MakeStrewn(&targetLocus, policy->numsegments);
 			subpath = cdbpath_create_explicit_motion_path(root,
 														  subpath,

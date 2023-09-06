@@ -8,9 +8,11 @@ test: checkpoint_dtx_info
 test: autovacuum-analyze
 test: vacuum_skip_locked_onseg
 test: lockmodes
+test: log_directory
 test: pg_rewind_fail_missing_xlog
 test: prepared_xact_deadlock_pg_rewind
 test: ao_partition_lock
+test: concurrent_partition_table_operations_should_not_deadlock
 
 test: select_dropped_table
 test: update_hash_col_utilitymode execute_on_utilitymode
@@ -114,7 +116,7 @@ test: uao/cursor_before_update_row
 test: uao/cursor_withhold_row
 test: uao/cursor_withhold2_row
 test: uao/delete_while_vacuum_row
-test: uao/index_build_reltuples_row
+test: uao/index_build_relstats_row
 test: uao/index_only_scan_row
 test: uao/insert_policy_row
 test: uao/insert_while_vacuum_row
@@ -181,7 +183,7 @@ test: uao/cursor_before_update_column
 test: uao/cursor_withhold_column
 test: uao/cursor_withhold2_column
 test: uao/delete_while_vacuum_column
-test: uao/index_build_reltuples_column
+test: uao/index_build_relstats_column
 test: uao/index_only_scan_column
 test: uao/insert_policy_column
 test: uao/insert_while_vacuum_column
@@ -253,13 +255,15 @@ test: appendonly_analyze_progress
 test: aoco_analyze_progress
 test: ao_index_build_progress
 
+# this test contains some fault injection that might get mis-hit by autovacuum process,
+# so it needs to be run with autovacuum being disabled
+test: segwalrep/die_commit_pending_replication
+
 test: enable_autovacuum
 test: idle_gang_cleaner
 # test idle_in_transaction_session_timeout
 
 test: copy_progress
-
-test: segwalrep/die_commit_pending_replication
 
 # Tests for FTS
 test: fts_errors
@@ -275,7 +279,7 @@ test: segwalrep/dtm_recovery_on_standby
 test: segwalrep/commit_blocking_on_standby
 test: segwalrep/max_slot_wal_keep_size
 test: segwalrep/dtx_recovery_wait_lsn
-test: segwalrep/select_throttle
+test: segwalrep/hintbit_throttle
 test: fts_manual_probe
 test: fts_session_reset
 test: fts_segment_reset
@@ -355,5 +359,4 @@ test: spilling_hashagg
 test: brin_heap
 
 # Intensive tests for BRIN
-test: uao/brin_chain_row
-test: uao/brin_chain_column
+test: uao/brin_chain_row uao/brin_chain_column

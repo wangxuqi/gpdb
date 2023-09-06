@@ -18,7 +18,9 @@
 extern "C" {
 #include "postgres.h"
 
+#include "access/amapi.h"
 #include "access/attnum.h"
+#include "optimizer/plancat.h"
 #include "parser/parse_coerce.h"
 #include "statistics/statistics.h"
 #include "utils/faultinjector.h"
@@ -207,9 +209,6 @@ void FreeAttrStatsSlot(AttStatsSlot *sslot);
 
 // attribute statistics
 HeapTuple GetAttStats(Oid relid, AttrNumber attnum);
-
-// attribute width
-int32 GetAttAvgWidth(Oid relid, AttrNumber attnum);
 
 List *GetExtStats(Relation rel);
 
@@ -436,9 +435,6 @@ void GpdbEreportImpl(int xerrcode, int severitylevel, const char *xerrmsg,
 // string representation of a node
 char *NodeToString(void *obj);
 
-// node representation from a string
-Node *StringToNode(char *string);
-
 // return the default value of the type
 Node *GetTypeDefault(Oid typid);
 
@@ -499,6 +495,8 @@ GpPolicy *GetDistributionPolicy(Relation rel);
 gpos::BOOL IsChildPartDistributionMismatched(Relation rel);
 
 double CdbEstimatePartitionedNumTuples(Relation rel);
+
+PageEstimate CdbEstimatePartitionedNumPages(Relation rel);
 
 // close the given relation
 void CloseRelation(Relation rel);
@@ -573,6 +571,9 @@ bool HasUpdateTriggers(Oid relid);
 // get index operator family properties
 void IndexOpProperties(Oid opno, Oid opfamily, StrategyNumber *strategynumber,
 					   Oid *righttype);
+
+// check whether index column is returnable (for index-only scans)
+gpos::BOOL IndexCanReturn(Relation index, int attno);
 
 // get oids of families this operator belongs to
 List *GetOpFamiliesForScOp(Oid opno);
@@ -662,6 +663,12 @@ TargetEntry *TlistMember(Expr *node, List *targetlist);
 Var *MakeVarFromTargetEntry(Index varno, TargetEntry *tle);
 
 TargetEntry *FlatCopyTargetEntry(TargetEntry *src_tle);
+
+bool IsTypeRange(Oid typid);
+
+char *GetRelAmName(Oid reloid);
+
+IndexAmRoutine *GetIndexAmRoutineFromAmHandler(Oid am_handler);
 
 }  //namespace gpdb
 

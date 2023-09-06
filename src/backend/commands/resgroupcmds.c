@@ -30,11 +30,14 @@
 #include "cdb/cdbvars.h"
 #include "commands/comment.h"
 #include "commands/defrem.h"
+#include "commands/tablespace.h"
 #include "commands/resgroupcmds.h"
 #include "miscadmin.h"
+#include "nodes/pg_list.h"
 #include "utils/builtins.h"
 #include "utils/datetime.h"
 #include "utils/fmgroids.h"
+#include "utils/palloc.h"
 #include "utils/resgroup.h"
 #include "utils/cgroup.h"
 #include "utils/resource_manager.h"
@@ -76,7 +79,6 @@ static void dropResgroupCallback(XactEvent event, void *arg);
 static void alterResgroupCallback(XactEvent event, void *arg);
 static void checkCpusetSyntax(const char *cpuset);
 
-
 /*
  * CREATE RESOURCE GROUP
  */
@@ -94,6 +96,7 @@ CreateResourceGroup(CreateResourceGroupStmt *stmt)
 	bool		new_record_nulls[Natts_pg_resgroup];
 	ResGroupCaps caps;
 	int			nResGroups;
+	MemoryContext oldContext;
 
 	/* Permission check - only superuser can create groups. */
 	if (!superuser())
@@ -207,14 +210,19 @@ CreateResourceGroup(CreateResourceGroupStmt *stmt)
 		AllocResGroupEntry(groupid, &caps);
 
 		/* Argument of callback function should be allocated in heap region */
-		callbackCtx = (ResourceGroupCallbackContext *)
-			MemoryContextAlloc(TopMemoryContext, sizeof(*callbackCtx));
+		oldContext = MemoryContextSwitchTo(TopMemoryContext);
+		callbackCtx = (ResourceGroupCallbackContext *) palloc0(sizeof(*callbackCtx));
 		callbackCtx->groupid = groupid;
 		callbackCtx->caps = caps;
+
+		MemoryContextSwitchTo(oldContext);
 		RegisterXactCallbackOnce(createResgroupCallback, callbackCtx);
 
 		/* Create os dependent part for this resource group */
 		cgroupOpsRoutine->createcgroup(groupid);
+
+		if (caps.io_limit != NIL)
+			cgroupOpsRoutine->setio(groupid, caps.io_limit);
 
 		if (CpusetIsEmpty(caps.cpuset))
 		{
@@ -358,7 +366,9 @@ AlterResourceGroup(AlterResourceGroupStmt *stmt)
 	ResGroupCaps		oldCaps;
 	ResGroupCap			value = 0;
 	const char *cpuset = NULL;
+	char *io_limit = NULL;
 	ResourceGroupCallbackContext	*callbackCtx;
+	MemoryContext oldContext;
 
 	/* Permission check - only superuser can alter resource groups. */
 	if (!superuser())
@@ -383,6 +393,8 @@ AlterResourceGroup(AlterResourceGroupStmt *stmt)
 		cpuset = defGetString(defel);
 		checkCpuSetByRole(cpuset);
 	}
+	else if (limitType == RESGROUP_LIMIT_TYPE_IO_LIMIT)
+		io_limit = defGetString(defel);
 	else
 	{
 		value = getResgroupOptionValue(defel);
@@ -446,6 +458,17 @@ AlterResourceGroup(AlterResourceGroupStmt *stmt)
 		case RESGROUP_LIMIT_TYPE_MIN_COST:
 			caps.min_cost = value;
 			break;
+		case RESGROUP_LIMIT_TYPE_IO_LIMIT:
+			oldContext = CurrentMemoryContext;
+			if (cgroupOpsRoutine == NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("resource group must be enabled to use io limit feature")));
+
+			MemoryContextSwitchTo(TopMemoryContext);
+			caps.io_limit = cgroupOpsRoutine->parseio(io_limit);
+			MemoryContextSwitchTo(oldContext);
+			break;
 		default:
 			break;
 	}
@@ -477,6 +500,13 @@ AlterResourceGroup(AlterResourceGroupStmt *stmt)
 									  groupid, RESGROUP_LIMIT_TYPE_CPU,
 									  value, "");
 	}
+	else if (limitType == RESGROUP_LIMIT_TYPE_IO_LIMIT)
+	{
+		if (caps.io_limit != NIL)
+			updateResgroupCapabilityEntry(pg_resgroupcapability_rel,
+										  groupid, RESGROUP_LIMIT_TYPE_IO_LIMIT,
+										  0, cgroupOpsRoutine->dumpio(caps.io_limit));
+	}
 	else
 	{
 		updateResgroupCapabilityEntry(pg_resgroupcapability_rel,
@@ -503,12 +533,14 @@ AlterResourceGroup(AlterResourceGroupStmt *stmt)
 	if (IsResGroupActivated())
 	{
 		/* Argument of callback function should be allocated in heap region */
-		callbackCtx = (ResourceGroupCallbackContext *)
-			MemoryContextAlloc(TopMemoryContext, sizeof(*callbackCtx));
+		oldContext = MemoryContextSwitchTo(TopMemoryContext);
+		callbackCtx = (ResourceGroupCallbackContext *) palloc0(sizeof(*callbackCtx));
 		callbackCtx->groupid = groupid;
 		callbackCtx->limittype = limitType;
 		callbackCtx->caps = caps;
 		callbackCtx->oldCaps = oldCaps;
+
+		MemoryContextSwitchTo(oldContext);
 		RegisterXactCallbackOnce(alterResgroupCallback, callbackCtx);
 	}
 }
@@ -519,6 +551,7 @@ AlterResourceGroup(AlterResourceGroupStmt *stmt)
 void
 GetResGroupCapabilities(Relation rel, Oid groupId, ResGroupCaps *resgroupCaps)
 {
+	MemoryContext oldContext;
 	SysScanDesc	sscan;
 	ScanKeyData	key;
 	HeapTuple	tuple;
@@ -592,6 +625,17 @@ GetResGroupCapabilities(Relation rel, Oid groupId, ResGroupCaps *resgroupCaps)
 			case RESGROUP_LIMIT_TYPE_MIN_COST:
 				resgroupCaps->min_cost = str2Int(value,
 													getResgroupOptionName(type));
+				break;
+			case RESGROUP_LIMIT_TYPE_IO_LIMIT:
+				if (cgroupOpsRoutine != NULL)
+				{
+					oldContext = CurrentMemoryContext;
+					MemoryContextSwitchTo(TopMemoryContext);
+					resgroupCaps->io_limit = cgroupOpsRoutine->parseio(value);
+					MemoryContextSwitchTo(oldContext);
+				}
+				else
+					resgroupCaps->io_limit = NIL;
 				break;
 			default:
 				break;
@@ -744,6 +788,9 @@ ResGroupCheckForRole(Oid groupId)
 	/* Load current resource group capabilities */
 	GetResGroupCapabilities(pg_resgroupcapability_rel, groupId, &caps);
 
+	if (cgroupOpsRoutine != NULL && caps.io_limit != NIL)
+		cgroupOpsRoutine->freeio(caps.io_limit);
+
 	heap_close(pg_resgroupcapability_rel, AccessShareLock);
 }
 
@@ -769,6 +816,8 @@ getResgroupOptionType(const char* defname)
 		return RESGROUP_LIMIT_TYPE_MEMORY_LIMIT;
 	else if (strcmp(defname, "min_cost") == 0)
 		return RESGROUP_LIMIT_TYPE_MIN_COST;
+	else if (strcmp(defname, "io_limit") == 0)
+		return RESGROUP_LIMIT_TYPE_IO_LIMIT;
 	else
 		return RESGROUP_LIMIT_TYPE_UNKNOWN;
 }
@@ -881,6 +930,7 @@ checkResgroupCapLimit(ResGroupLimitType type, int value)
 static void
 parseStmtOptions(CreateResourceGroupStmt *stmt, ResGroupCaps *caps)
 {
+	MemoryContext oldContext;
 	ListCell *cell;
 	ResGroupCap value;
 	int mask = 0;
@@ -911,7 +961,21 @@ parseStmtOptions(CreateResourceGroupStmt *stmt, ResGroupCaps *caps)
 			caps->cpuMaxPercent = CPU_MAX_PERCENT_DISABLED;
 			caps->cpuWeight = RESGROUP_DEFAULT_CPU_WEIGHT;
 		}
-		else 
+		else if (type == RESGROUP_LIMIT_TYPE_IO_LIMIT)
+		{
+			char *io_limit_str = defGetString(defel);
+
+			oldContext = CurrentMemoryContext;
+			if (cgroupOpsRoutine == NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("resource group must be enabled to use io limit feature")));
+
+			MemoryContextSwitchTo(TopMemoryContext);
+			caps->io_limit = cgroupOpsRoutine->parseio(io_limit_str);
+			MemoryContextSwitchTo(oldContext);
+		}
+		else
 		{
 			value = getResgroupOptionValue(defel);
 			checkResgroupCapLimit(type, value);
@@ -984,6 +1048,9 @@ createResgroupCallback(XactEvent event, void *arg)
 	{
 		ResGroupCreateOnAbort(callbackCtx);
 	}
+
+	if (callbackCtx->caps.io_limit != NIL)
+		cgroupOpsRoutine->freeio(callbackCtx->caps.io_limit);
 	pfree(callbackCtx);
 }
 
@@ -1015,6 +1082,12 @@ alterResgroupCallback(XactEvent event, void *arg)
 
 	if (event == XACT_EVENT_COMMIT)
 		ResGroupAlterOnCommit(callbackCtx);
+
+	if (callbackCtx->caps.io_limit != NIL)
+		cgroupOpsRoutine->freeio(callbackCtx->caps.io_limit);
+
+	if (callbackCtx->caps.io_limit != NIL)
+		cgroupOpsRoutine->freeio(callbackCtx->oldCaps.io_limit);
 
 	pfree(callbackCtx);
 }
@@ -1060,6 +1133,14 @@ insertResgroupCapabilities(Relation rel, Oid groupId, ResGroupCaps *caps)
 	snprintf(value, sizeof(value), "%d", caps->min_cost);
 	insertResgroupCapabilityEntry(rel, groupId,
 								  RESGROUP_LIMIT_TYPE_MIN_COST, value);
+
+	if (caps->io_limit != NIL)
+		insertResgroupCapabilityEntry(rel, groupId,
+									  RESGROUP_LIMIT_TYPE_IO_LIMIT,
+									  cgroupOpsRoutine->dumpio((caps->io_limit)));
+	else
+		insertResgroupCapabilityEntry(rel, groupId,
+									  RESGROUP_LIMIT_TYPE_IO_LIMIT, DefaultIOLimit);
 }
 
 /*
@@ -1126,7 +1207,14 @@ updateResgroupCapabilityEntry(Relation rel,
 		snprintf(stringBuffer, sizeof(stringBuffer), "%d", value);
 	}
 
-	values[Anum_pg_resgroupcapability_value - 1] = CStringGetTextDatum(stringBuffer);
+	if (limitType == RESGROUP_LIMIT_TYPE_IO_LIMIT)
+	{
+		/* Because stringBuffer is a limited length array, so it not suitable for io limit. */
+		values[Anum_pg_resgroupcapability_value - 1] = CStringGetTextDatum(strValue);
+	}
+	else
+		values[Anum_pg_resgroupcapability_value - 1] = CStringGetTextDatum(stringBuffer);
+
 	isnull[Anum_pg_resgroupcapability_value - 1] = false;
 	repl[Anum_pg_resgroupcapability_value - 1]  = true;
 
@@ -1505,3 +1593,4 @@ getCpuSetByRole(const char *cpuset)
 
 	return splitcpuset;
 }
+

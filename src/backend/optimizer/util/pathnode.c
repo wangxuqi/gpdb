@@ -3375,28 +3375,21 @@ create_foreignscan_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->path.startup_cost = startup_cost;
 	pathnode->path.total_cost = total_cost;
 	pathnode->path.pathkeys = pathkeys;
-
 	if (Gp_role == GP_ROLE_DISPATCH)
 	{
-		ForeignServer *server = NULL;
-
 		switch (rel->exec_location)
 		{
-		case FTEXECLOCATION_ANY:
-			CdbPathLocus_MakeGeneral(&(pathnode->path.locus));
-			break;
-		case FTEXECLOCATION_ALL_SEGMENTS:
-			server = GetForeignServer(rel->serverid);
-			if (server)
-				CdbPathLocus_MakeStrewn(&(pathnode->path.locus), server->num_segments);
-			else
-				CdbPathLocus_MakeStrewn(&(pathnode->path.locus), getgpsegmentCount());
-			break;
-		case FTEXECLOCATION_COORDINATOR:
-			CdbPathLocus_MakeEntry(&(pathnode->path.locus));
-			break;
-		default:
-			elog(ERROR, "unrecognized exec_location '%c'", rel->exec_location);
+			case FTEXECLOCATION_ANY:
+				CdbPathLocus_MakeGeneral(&(pathnode->path.locus));
+				break;
+			case FTEXECLOCATION_ALL_SEGMENTS:
+				pathnode->path.locus = cdbpathlocus_from_baserel(root, rel);
+				break;
+			case FTEXECLOCATION_COORDINATOR:
+				CdbPathLocus_MakeEntry(&(pathnode->path.locus));
+				break;
+			default:
+				elog(ERROR, "unrecognized exec_location '%c'", rel->exec_location);
 		}
 	}
 	else
@@ -3404,7 +3397,6 @@ create_foreignscan_path(PlannerInfo *root, RelOptInfo *rel,
 		/* make entry locus for utility role */
 		CdbPathLocus_MakeEntry(&(pathnode->path.locus));
 	}
-
 	pathnode->fdw_outerpath = fdw_outerpath;
 	pathnode->fdw_private = fdw_private;
 
@@ -3454,27 +3446,34 @@ create_foreign_join_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->path.startup_cost = startup_cost;
 	pathnode->path.total_cost = total_cost;
 	pathnode->path.pathkeys = pathkeys;
-
-	ForeignServer *server = NULL;
-	switch (rel->exec_location)
+	if (Gp_role == GP_ROLE_DISPATCH)
 	{
-		case FTEXECLOCATION_ANY:
-			CdbPathLocus_MakeGeneral(&(pathnode->path.locus));
-			break;
-		case FTEXECLOCATION_ALL_SEGMENTS:
-			server = GetForeignServer(rel->serverid);
-			if (server)
-				CdbPathLocus_MakeStrewn(&(pathnode->path.locus), server->num_segments);
-			else
-				CdbPathLocus_MakeStrewn(&(pathnode->path.locus), getgpsegmentCount());
-			break;
-		case FTEXECLOCATION_COORDINATOR:
-			CdbPathLocus_MakeEntry(&(pathnode->path.locus));
-			break;
-		default:
-			elog(ERROR, "unrecognized exec_location '%c'", rel->exec_location);
-	}
+		ForeignServer *server = NULL;
 
+		switch (rel->exec_location)
+		{
+			case FTEXECLOCATION_ANY:
+				CdbPathLocus_MakeGeneral(&(pathnode->path.locus));
+				break;
+			case FTEXECLOCATION_ALL_SEGMENTS:
+				server = GetForeignServer(rel->serverid);
+				if (server)
+					CdbPathLocus_MakeStrewn(&(pathnode->path.locus), server->num_segments);
+				else
+					CdbPathLocus_MakeStrewn(&(pathnode->path.locus), getgpsegmentCount());
+				break;
+			case FTEXECLOCATION_COORDINATOR:
+				CdbPathLocus_MakeEntry(&(pathnode->path.locus));
+				break;
+			default:
+				elog(ERROR, "unrecognized exec_location '%c'", rel->exec_location);
+		}
+	}
+	else
+	{
+		/* make entry locus for utility role */
+		CdbPathLocus_MakeEntry(&(pathnode->path.locus));
+	}
 	pathnode->fdw_outerpath = fdw_outerpath;
 	pathnode->fdw_private = fdw_private;
 
@@ -3501,7 +3500,6 @@ create_foreign_upper_path(PlannerInfo *root, RelOptInfo *rel,
 						  List *fdw_private)
 {
 	ForeignPath *pathnode = makeNode(ForeignPath);
-
 	/*
 	 * Upper relations should never have any lateral references, since joining
 	 * is complete.
@@ -3519,22 +3517,34 @@ create_foreign_upper_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->path.startup_cost = startup_cost;
 	pathnode->path.total_cost = total_cost;
 	pathnode->path.pathkeys = pathkeys;
-
-	switch (rel->exec_location)
+	if (Gp_role == GP_ROLE_DISPATCH)
 	{
-		case FTEXECLOCATION_ANY:
-			CdbPathLocus_MakeGeneral(&(pathnode->path.locus));
-			break;
-		case FTEXECLOCATION_ALL_SEGMENTS:
-			CdbPathLocus_MakeStrewn(&(pathnode->path.locus), getgpsegmentCount());
-			break;
-		case FTEXECLOCATION_COORDINATOR:
-			CdbPathLocus_MakeEntry(&(pathnode->path.locus));
-			break;
-		default:
-			elog(ERROR, "unrecognized exec_location '%c'", rel->exec_location);
-	}
+		ForeignServer *server = NULL;
 
+		switch (rel->exec_location)
+		{
+			case FTEXECLOCATION_ANY:
+				CdbPathLocus_MakeGeneral(&(pathnode->path.locus));
+				break;
+			case FTEXECLOCATION_ALL_SEGMENTS:
+				server = GetForeignServer(rel->serverid);
+				if (server)
+					CdbPathLocus_MakeStrewn(&(pathnode->path.locus), server->num_segments);
+				else
+					CdbPathLocus_MakeStrewn(&(pathnode->path.locus), getgpsegmentCount());
+				break;
+			case FTEXECLOCATION_COORDINATOR:
+				CdbPathLocus_MakeEntry(&(pathnode->path.locus));
+				break;
+			default:
+				elog(ERROR, "unrecognized exec_location '%c'", rel->exec_location);
+		}
+	}
+	else
+	{
+		/* make entry locus for utility role */
+		CdbPathLocus_MakeEntry(&(pathnode->path.locus));
+	}
 	pathnode->fdw_outerpath = fdw_outerpath;
 	pathnode->fdw_private = fdw_private;
 

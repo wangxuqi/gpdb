@@ -180,7 +180,7 @@ select string_agg(b, '') over (partition by a) from foo order by 1;
 select string_agg(b, '') over (partition by a,b) from foo order by 1;
 -- should not fall back
 select max(b) over (partition by a) from foo order by 1;
-select count_operator('select max(b) over (partition by a) from foo order by 1;', 'Pivotal Optimizer (GPORCA)');
+select count_operator('select max(b) over (partition by a) from foo order by 1;', 'GPORCA');
 -- fall back
 select string_agg(b, '') over (partition by a+1) from foo order by 1;
 select string_agg(b || 'txt', '') over (partition by a) from foo order by 1;
@@ -1470,6 +1470,14 @@ select 1, sum(col1) from group_by_const group by 1;
 explain (costs off)
 select 1, median(col1) from group_by_const group by 1;
 select 1, median(col1) from group_by_const group by 1;
+
+-- Test GROUP BY with a RelabelType
+create table tx (c1 text);
+insert into tx values('hello');
+EXPLAIN (COSTS OFF, VERBOSE ON)
+SELECT MIN(tx.c1) FROM tx GROUP BY (tx.c1)::VARCHAR;
+SELECT MIN(tx.c1) FROM tx GROUP BY (tx.c1)::VARCHAR;
+drop table tx;
 
 -- ORCA should pick singlestage-agg plan when multistage-agg guc is true
 -- and distribution type is universal/replicated

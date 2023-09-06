@@ -16,6 +16,7 @@
 #include "gpos/common/CAutoRef.h"
 #include "gpos/common/CAutoTimer.h"
 
+#include "gpopt/base/CCastUtils.h"
 #include "gpopt/base/CColRefSetIter.h"
 #include "gpopt/base/CColRefTable.h"
 #include "gpopt/base/CConstraintInterval.h"
@@ -1988,9 +1989,13 @@ UpdateExprToConstantPredicateMapping(CMemoryPool *mp, CExpression *pexprFilter,
 		{
 			if (doInsert)
 			{
-				(*pexprFilter)[0]->AddRef();
-				(*pexprFilter)[1]->AddRef();
-				phmExprToConst->Insert((*pexprFilter)[0], (*pexprFilter)[1]);
+				BOOL inserted = phmExprToConst->Insert((*pexprFilter)[0],
+													   (*pexprFilter)[1]);
+				if (inserted)
+				{
+					(*pexprFilter)[0]->AddRef();
+					(*pexprFilter)[1]->AddRef();
+				}
 			}
 			else
 			{
@@ -2003,9 +2008,13 @@ UpdateExprToConstantPredicateMapping(CMemoryPool *mp, CExpression *pexprFilter,
 		{
 			if (doInsert)
 			{
-				(*pexprFilter)[0]->AddRef();
-				(*pexprFilter)[1]->AddRef();
-				phmExprToConst->Insert((*pexprFilter)[1], (*pexprFilter)[0]);
+				BOOL inserted = phmExprToConst->Insert((*pexprFilter)[1],
+													   (*pexprFilter)[0]);
+				if (inserted)
+				{
+					(*pexprFilter)[0]->AddRef();
+					(*pexprFilter)[1]->AddRef();
+				}
 			}
 			else
 			{
@@ -2573,7 +2582,8 @@ CExpressionPreprocessor::PexprPruneProjListProjectOrGbAgg(
 	return pexprResult;
 }
 
-// reorder the child for scalar comparision to ensure that left child is a scalar ident and right child is a scalar const if not
+// reorder the child for scalar comparision to ensure that left child is a scalar ident
+// or cast(ident) and right child is a scalar const
 CExpression *
 CExpressionPreprocessor::PexprReorderScalarCmpChildren(CMemoryPool *mp,
 													   CExpression *pexpr)
@@ -2588,7 +2598,11 @@ CExpressionPreprocessor::PexprReorderScalarCmpChildren(CMemoryPool *mp,
 		CExpression *pexprLeft = (*pexpr)[0];
 		CExpression *pexprRight = (*pexpr)[1];
 
-		if (CUtils::FScalarConst(pexprLeft) && CUtils::FScalarIdent(pexprRight))
+		// left side is const
+		// right side is either ident, or, cast of ident
+		if (CUtils::FScalarConst(pexprLeft) &&
+			(CUtils::FScalarIdent(pexprRight) ||
+			 CCastUtils::FScalarCastIdent(pexprRight)))
 		{
 			CScalarCmp *popScalarCmpCommuted =
 				(dynamic_cast<CScalarCmp *>(pop))->PopCommutedOp(mp);
@@ -2760,9 +2774,17 @@ CExpressionPreprocessor::PexprExistWithPredFromINSubq(CMemoryPool *mp,
 		// it does not include any column from the relational child.
 		if (COperator::EopLogicalProject == pexprLogicalProject->Pop()->Eopid())
 		{
-			// bail out if subquery has an inner reference or does not have any outer reference
+			// bail out if subquery has an inner reference or
+			// does not have any outer reference
 			if (!CUtils::HasOuterRefs(pexprLogicalProject) ||
 				CUtils::FInnerRefInProjectList(pexprLogicalProject))
+			{
+				return pexprNew;
+			}
+			// also bail out if the project list returns set
+			CExpression *pexprProjectList = (*pexprLogicalProject)[1];
+			if (pexprProjectList->DeriveSetReturningFunctionColumns()->Size() >
+				0)
 			{
 				return pexprNew;
 			}
@@ -2786,7 +2808,6 @@ CExpressionPreprocessor::PexprExistWithPredFromINSubq(CMemoryPool *mp,
 		{
 			pexprNew->Release();
 			pexprNew = pexprNewConverted;
-			;
 		}
 	}
 

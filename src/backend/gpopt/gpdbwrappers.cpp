@@ -33,7 +33,9 @@
 
 #include "catalog/pg_collation.h"
 extern "C" {
+#include "access/amapi.h"
 #include "access/external.h"
+#include "access/genam.h"
 #include "catalog/pg_inherits.h"
 #include "foreign/fdwapi.h"
 #include "nodes/nodeFuncs.h"
@@ -748,18 +750,6 @@ gpdb::GetAttStats(Oid relid, AttrNumber attnum)
 	}
 	GP_WRAP_END;
 	return nullptr;
-}
-
-int32
-gpdb::GetAttAvgWidth(Oid relid, AttrNumber attnum)
-{
-	GP_WRAP_START;
-	{
-		/* catalog tables: pg_statistic */
-		return get_attavgwidth(relid, attnum);
-	}
-	GP_WRAP_END;
-	return 0;
 }
 
 List *
@@ -1587,18 +1577,6 @@ gpdb::NodeToString(void *obj)
 }
 
 Node *
-gpdb::StringToNode(char *string)
-{
-	GP_WRAP_START;
-	{
-		return (Node *) stringToNode(string);
-	}
-	GP_WRAP_END;
-	return nullptr;
-}
-
-
-Node *
 gpdb::GetTypeDefault(Oid typid)
 {
 	GP_WRAP_START;
@@ -1831,6 +1809,16 @@ gpdb::CdbEstimatePartitionedNumTuples(Relation rel)
 	GP_WRAP_START;
 	{
 		return cdb_estimate_partitioned_numtuples(rel);
+	}
+	GP_WRAP_END;
+}
+
+PageEstimate
+gpdb::CdbEstimatePartitionedNumPages(Relation rel)
+{
+	GP_WRAP_START;
+	{
+		return cdb_estimate_partitioned_numpages(rel);
 	}
 	GP_WRAP_END;
 }
@@ -2108,6 +2096,17 @@ gpdb::IndexOpProperties(Oid opno, Oid opfamily, StrategyNumber *strategynumber,
 					strategy <= std::numeric_limits<StrategyNumber>::max());
 		*strategynumber = static_cast<StrategyNumber>(strategy);
 		return;
+	}
+	GP_WRAP_END;
+}
+
+// check whether index column is returnable (for index-only scans)
+gpos::BOOL
+gpdb::IndexCanReturn(Relation index, int attno)
+{
+	GP_WRAP_START;
+	{
+		return index_can_return(index, attno);
 	}
 	GP_WRAP_END;
 }
@@ -2664,5 +2663,40 @@ gpdb::FlatCopyTargetEntry(TargetEntry *src_tle)
 	GP_WRAP_END;
 }
 
+
+// Returns true if type is a RANGE
+// pg_type (typtype = 'r')
+bool
+gpdb::IsTypeRange(Oid typid)
+{
+	GP_WRAP_START;
+	{
+		return type_is_range(typid);
+	}
+	GP_WRAP_END;
+	return false;
+}
+
+char *
+gpdb::GetRelAmName(Oid reloid)
+{
+	GP_WRAP_START;
+	{
+		return GetAmName(reloid);
+	}
+	GP_WRAP_END;
+	return nullptr;
+}
+
+// Get IndexAmRoutine struct for the given access method handler.
+IndexAmRoutine *
+gpdb::GetIndexAmRoutineFromAmHandler(Oid am_handler)
+{
+	GP_WRAP_START;
+	{
+		return GetIndexAmRoutine(am_handler);
+	}
+	GP_WRAP_END;
+}
 
 // EOF

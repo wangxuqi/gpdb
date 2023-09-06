@@ -40,6 +40,8 @@
 #include "catalog/pg_database.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_namespace.h"
+#include "catalog/pg_stat_last_operation_d.h"
+#include "catalog/pg_stat_last_shoperation_d.h"
 #include "commands/cluster.h"
 #include "commands/defrem.h"
 #include "commands/tablecmds.h"
@@ -124,7 +126,9 @@ ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel, bool auto_s
 	bool		disable_page_skipping = false;
 	bool		rootonly = false;
 	bool		fullscan = false;
-	int		ao_phase = 0;
+	int			ao_phase = 0;
+	bool		skip_database_stats = false;
+	bool		only_database_stats = false;
 	ListCell   *lc;
 
 	/* Set default value */
@@ -171,6 +175,10 @@ ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel, bool auto_s
 			ao_phase = defGetInt32(opt);
 			Assert((ao_phase & VACUUM_AO_PHASE_MASK) == ao_phase);
 		}
+		else if (strcmp(opt->defname, "skip_database_stats") == 0)
+			skip_database_stats = defGetBoolean(opt);
+		else if (strcmp(opt->defname, "only_database_stats") == 0)
+			only_database_stats = defGetBoolean(opt);
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
@@ -187,13 +195,16 @@ ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel, bool auto_s
 		(freeze ? VACOPT_FREEZE : 0) |
 		(full ? VACOPT_FULL : 0) |
 		(ao_aux_only ? VACOPT_AO_AUX_ONLY : 0) |
-		(disable_page_skipping ? VACOPT_DISABLE_PAGE_SKIPPING : 0);
+		(disable_page_skipping ? VACOPT_DISABLE_PAGE_SKIPPING : 0) |
+		(skip_database_stats ? VACOPT_SKIP_DATABASE_STATS : 0) |
+		(only_database_stats ? VACOPT_ONLY_DATABASE_STATS : 0);
 
 	if (rootonly)
 		params.options |= VACOPT_ROOTONLY;
 	if (fullscan)
 		params.options |= VACOPT_FULLSCAN;
 	params.options |= ao_phase;
+
 
 	/* sanity checks on options */
 	Assert(params.options & (VACOPT_VACUUM | VACOPT_ANALYZE));
@@ -342,6 +353,23 @@ vacuum(List *relations, VacuumParams *params,
 	if ((params->options & VACOPT_VACUUM) && !IsAutoVacuumWorkerProcess())
 		pgstat_vacuum_stat();
 
+	/* sanity check for ONLY_DATABASE_STATS */
+	if (params->options & VACOPT_ONLY_DATABASE_STATS)
+	{
+		Assert(params->options & VACOPT_VACUUM);
+		if (relations != NIL)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("ONLY_DATABASE_STATS cannot be specified with a list of tables")));
+
+		if (params->options & ~(VACOPT_VACUUM |
+								VACOPT_VERBOSE |
+								VACOPT_ONLY_DATABASE_STATS))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("ONLY_DATABASE_STATS cannot be specified with other VACUUM options")));
+	}
+
 	/*
 	 * Create special memory context for cross-transaction storage.
 	 *
@@ -369,7 +397,12 @@ vacuum(List *relations, VacuumParams *params,
 	 * Build list of relation(s) to process, putting any new data in
 	 * vac_context for safekeeping.
 	 */
-	if (relations != NIL)
+	if (params->options & VACOPT_ONLY_DATABASE_STATS)
+	{
+		/* We don't process any tables in this case */
+		Assert(relations == NIL);
+	}
+	else if (relations != NIL)
 	{
 		List		*newrels = NIL;
 		ListCell  *lc;
@@ -388,7 +421,42 @@ vacuum(List *relations, VacuumParams *params,
 		relations = newrels;
 	}
 	else
+	{
 		relations = get_all_vacuum_rels(params->options);
+
+		/*
+		 * GPDB: for a database-wide VACUUM FREEZE (relations==NIL), make sure 
+		 * pg_stat_last_operation and pg_stat_last_shoperation are the last tables
+		 * to be frozen, so that all the meta-tracking rows that we are inserting 
+		 * into pg_stat_last_operation/pg_stat_last_shoperation during VACUUM FREEZE
+		 * can be frozen too. In addition, we will skip the meta-tracking of 
+		 * pg_stat_last_operation/pg_stat_last_shoperation itself. All of these will
+		 * make sure that we do not leave any unfrozen row after database-wide VACUUM FREEZE.
+		 */
+		if (params->options & VACOPT_FREEZE)
+		{
+			ListCell 		*lc;
+			ListCell 		*prev = NULL;
+			ListCell 		*original_tail = list_tail(relations);
+
+			/* go through the original table list and move the two tables to the end */
+			for (lc = list_head(relations); lc != original_tail; )
+			{
+				VacuumRelation *vrel = lfirst_node(VacuumRelation, lc);
+				ListCell *next = lnext(lc);
+
+				if (vrel->oid == StatLastOpRelationId || vrel->oid == StatLastShOpRelationId)
+				{
+					relations = list_delete_cell(relations, lc, prev);
+					relations = lappend(relations, vrel);
+					lc = NULL;
+				}
+				if (lc)
+					prev = lc;
+				lc = next;
+			}
+		}
+	}
 
 	/*
 	 * Decide whether we need to start/commit our own transactions.
@@ -536,7 +604,8 @@ vacuum(List *relations, VacuumParams *params,
 		ClearOidAssignmentsOnCommit();
 	}
 
-	if ((params->options & VACOPT_VACUUM) && !IsAutoVacuumWorkerProcess())
+	if ((params->options & VACOPT_VACUUM) &&
+		!(params->options & VACOPT_SKIP_DATABASE_STATS))
 	{
 		/*
 		 * GPDB vacuums an Append-Optimized table in multiple sub phases, update
@@ -552,7 +621,6 @@ vacuum(List *relations, VacuumParams *params,
 		{
 			/*
 			 * Update pg_database.datfrozenxid, and truncate pg_xact if possible.
-			 * (autovacuum.c does this for itself.)
 			 */
 			vac_update_datfrozenxid();
 		}
@@ -990,7 +1058,7 @@ expand_vacuum_rel(VacuumRelation *vrel, int options)
 		 * If current table is skipped, no need to merge stats for it's parent
 		 * since current table's stats is not get updated.
 		 */
-		if (optimizer_analyze_root_partition && !skip_this)
+		if ((options & VACOPT_ANALYZE) && optimizer_analyze_root_partition && !skip_this)
 		{
 			Oid			child_relid = relid;
 
@@ -1000,6 +1068,7 @@ expand_vacuum_rel(VacuumRelation *vrel, int options)
 				int			elevel = ((options & VACOPT_VERBOSE) ? LOG : DEBUG2);
 
 				parent_relid = get_partition_parent(child_relid);
+				ispartition = get_rel_relispartition(parent_relid);
 
 				/*
 				 * Only ANALYZE the parent if the stats can be updated by merging
@@ -1008,14 +1077,20 @@ expand_vacuum_rel(VacuumRelation *vrel, int options)
 				if (!leaf_parts_analyzed(parent_relid, child_relid, vrel->va_cols, elevel))
 					break;
 
-				oldcontext = MemoryContextSwitchTo(vac_context);
-				vacrels = lappend(vacrels, makeVacuumRelation(vrel->relation,
-															  parent_relid,
-															  vrel->va_cols));
-				MemoryContextSwitchTo(oldcontext);
+				/*
+				 * Do not add midlevel partition unless optimizer_analyze_midlevel_partition
+				 * is enabled. But always add root table.
+				 * ispartition is set with relispartition flag of the parent_relid.
+				 */
+				if(!ispartition || optimizer_analyze_midlevel_partition)
+				{
+					oldcontext = MemoryContextSwitchTo(vac_context);
+					vacrels = lappend(vacrels, makeVacuumRelation(vrel->relation,
+											  parent_relid,
+											  vrel->va_cols));
+					MemoryContextSwitchTo(oldcontext);
+				}
 
-				/* If the parent is also a partition, update its parent too. */
-				ispartition = get_rel_relispartition(parent_relid);
 				child_relid = parent_relid;
 			}
 		}
@@ -1492,7 +1567,7 @@ vac_update_relstats(Relation relation,
 		}
 		else if (Gp_role == GP_ROLE_EXECUTE)
 		{
-			vac_send_relstats_to_qd(relation,
+			vac_send_relstats_to_qd(relation->rd_id,
 									num_pages,
 									num_tuples,
 									num_all_visible_pages);
@@ -2574,26 +2649,34 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 		dispatchVacuum(params, relid, &stats_context);
 		vac_update_relstats_from_list(&stats_context);
 
-		/* Also update pg_stat_last_operation */
-		if (IsAutoVacuumWorkerProcess())
-			vsubtype = "AUTO";
-		else
+		/*
+		 * Also update pg_stat_last_operation/pg_stat_last_shoperation. Unless
+		 * we are freezing those two tables themselves, because we do not want
+		 * to create new unfrozen row in them.
+		 */
+		if (!(params->options & VACOPT_FREEZE && 
+					(relid == StatLastOpRelationId || relid == StatLastShOpRelationId)))
 		{
-			if ((params->options & VACOPT_FULL) &&
-				(0 == params->freeze_min_age))
-				vsubtype = "FULL FREEZE";
-			else if ((params->options & VACOPT_FULL))
-				vsubtype = "FULL";
-			else if (0 == params->freeze_min_age)
-				vsubtype = "FREEZE";
+			if (IsAutoVacuumWorkerProcess())
+				vsubtype = "AUTO";
 			else
-				vsubtype = "";
+			{
+				if ((params->options & VACOPT_FULL) &&
+					(0 == params->freeze_min_age))
+					vsubtype = "FULL FREEZE";
+				else if ((params->options & VACOPT_FULL))
+					vsubtype = "FULL";
+				else if (0 == params->freeze_min_age)
+					vsubtype = "FREEZE";
+				else
+					vsubtype = "";
+			}
+			MetaTrackUpdObject(RelationRelationId,
+							   relid,
+							   GetUserId(),
+							   "VACUUM",
+							   vsubtype);
 		}
-		MetaTrackUpdObject(RelationRelationId,
-						   relid,
-						   GetUserId(),
-						   "VACUUM",
-						   vsubtype);
 
 		/* Restore userid and security context */
 		SetUserIdAndSecContext(save_userid, save_sec_context);
@@ -2834,7 +2917,16 @@ vacuum_params_to_options_list(VacuumParams *params)
 		options = lappend(options, makeDefElem("disable_page_skipping", (Node *) makeInteger(1), -1));
 		optmask &= ~VACOPT_DISABLE_PAGE_SKIPPING;
 	}
-
+	if (optmask & VACOPT_SKIP_DATABASE_STATS)
+	{
+		options = lappend(options, makeDefElem("skip_database_stats", (Node *) makeInteger(1), -1));
+		optmask &= ~VACOPT_SKIP_DATABASE_STATS;
+	}
+	if (optmask & VACOPT_ONLY_DATABASE_STATS)
+	{
+		options = lappend(options, makeDefElem("only_database_stats", (Node *) makeInteger(1), -1));
+		optmask &= ~VACOPT_ONLY_DATABASE_STATS;
+	}
 	if (optmask & VACUUM_AO_PHASE_MASK)
 	{
 		options = lappend(options, makeDefElem("ao_phase",
@@ -2914,8 +3006,8 @@ vacuum_combine_stats(VacuumStatsContext *stats_context,
 	 * indexes. We parse this information, and compute the final stats
 	 * for the QD.
 	 *
-	 * For pg_class stats, we compute the maximum number of tuples and
-	 * maximum number of pages after processing the stats from each QE.
+	 * For pg_class stats, we compute the sum of tuples, number of pages and
+	 * allvisible pages after processing the stats from each QE.
 	 *
 	 */
 	for(result_no = 0; result_no < cdb_pgresults->numResults; result_no++)
@@ -3059,7 +3151,7 @@ vac_update_relstats_from_list(VacuumStatsContext *stats_context)
  * the dispatcher.
  */
 void
-vac_send_relstats_to_qd(Relation relation,
+vac_send_relstats_to_qd(Oid relid,
 						BlockNumber num_pages,
 						double num_tuples,
 						BlockNumber num_all_visible_pages)
@@ -3067,8 +3159,8 @@ vac_send_relstats_to_qd(Relation relation,
 
 	StringInfoData buf;
 	VPgClassStats stats;
-	Oid			relid = RelationGetRelid(relation);
-	Assert(relid != InvalidOid);
+
+	Assert(OidIsValid(relid));
 
 	pq_beginmessage(&buf, 'y');
 	pq_sendstring(&buf, "VACUUM");
