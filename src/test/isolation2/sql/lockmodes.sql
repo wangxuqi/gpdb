@@ -396,6 +396,9 @@ ALTER SYSTEM SET gp_enable_global_deadlock_detector TO on;
 
 1: show gp_enable_global_deadlock_detector;
 
+-- Check tookit for gp_check_orphaned_files works as expected.
+1: select * from gp_toolkit.gp_check_orphaned_files;
+
 1: set optimizer = off;
 
 2: show gp_enable_global_deadlock_detector;

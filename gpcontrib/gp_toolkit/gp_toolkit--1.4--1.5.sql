@@ -23,6 +23,7 @@ BEGIN
         WHERE
         sess_id <> -1 AND backend_type IN ('client backend', 'unknown process type') -- exclude background worker types
         AND sess_id <> current_setting('gp_session_id')::int -- Exclude the current session
+        AND query <> 'SELECT * FROM pg_catalog.gp_dist_wait_status()' -- Exclude gdd check query
     ) THEN
         RAISE EXCEPTION 'There is a client session running on one or more segment. Aborting...';
     END IF;

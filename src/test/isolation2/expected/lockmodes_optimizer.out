@@ -1157,6 +1157,12 @@ ALTER SYSTEM
  on                                 
 (1 row)
 
+-- Check tookit for gp_check_orphaned_files works as expected.
+1: select * from gp_toolkit.gp_check_orphaned_files;
+ gp_segment_id | tablespace | filename | filepath 
+---------------+------------+----------+----------
+(0 rows)
+
 1: set optimizer = off;
 SET
 
