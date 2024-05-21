@@ -1,0 +1,94 @@
+-- Create an appendonly columnar distribut replicated table to make the citd increase control easier.
+-- Insert 60921 rows into segment1. The row count is very exactly to trigger the bug. As we need to
+-- hit three conner cases:
+-- 1. GIN index posting list must put the first tuple of a new aoco segment at the end to one list segment.
+-- for example: encoded delta value is [1,2,10000]. 10000 is the delta of first tuple of the new segment ctid.
+-- 2. For a GinPostingListSegmentTargetSize(256) length segment, we need to make sure the left space for the
+-- first tuple of the new segment is 6 bytes. Can not be less or more. So it can reach the memory overflow.
+-- 3. Next time palloc must do the real malloc. not choose a free space from the memory context. This means
+-- we need to consume all the free space in the memory context before we reach the point in step.1.
+-- Above the three conner cases must be hit. So we need to control the inserted rows.
+-- Make some dead segment by abort transaction, to make a big jump of ctid.
+
+CREATE TABLE test_gin_aoco(a int, org_name varchar(20)) with (appendonly = true, orientation = column) distributed replicated;
+CREATE
+
+1: begin;
+BEGIN
+1: insert into test_gin_aoco select i, 'test' from generate_series(1,60921) i;
+INSERT 60921
+2: begin;
+BEGIN
+2: insert into test_gin_aoco select i, 'test' from generate_series(1,100) i;
+INSERT 100
+3: begin;
+BEGIN
+3: insert into test_gin_aoco select i, 'test' from generate_series(1,100) i;
+INSERT 100
+4: begin;
+BEGIN
+4: insert into test_gin_aoco select i, 'test' from generate_series(1,100) i;
+INSERT 100
+5: begin;
+BEGIN
+5: insert into test_gin_aoco select i, 'test' from generate_series(1,100) i;
+INSERT 100
+6: begin;
+BEGIN
+6: insert into test_gin_aoco select i, 'test' from generate_series(1,100) i;
+INSERT 100
+7: begin;
+BEGIN
+7: insert into test_gin_aoco select i, 'test' from generate_series(1,100) i;
+INSERT 100
+8: begin;
+BEGIN
+8: insert into test_gin_aoco select i, 'test' from generate_series(1,100) i;
+INSERT 100
+9: begin;
+BEGIN
+9: insert into test_gin_aoco select i, 'test' from generate_series(1,100) i;
+INSERT 100
+10: begin;
+BEGIN
+10: insert into test_gin_aoco select i, 'test' from generate_series(1,4189) i;
+INSERT 4189
+
+1: commit;
+COMMIT
+2: abort;
+ABORT
+3: abort;
+ABORT
+4: abort;
+ABORT
+5: abort;
+ABORT
+6: abort;
+ABORT
+7: abort;
+ABORT
+8: abort;
+ABORT
+9: abort;
+ABORT
+10: commit;
+COMMIT
+
+1q: ... <quitting>
+2q: ... <quitting>
+3q: ... <quitting>
+4q: ... <quitting>
+5q: ... <quitting>
+6q: ... <quitting>
+7q: ... <quitting>
+8q: ... <quitting>
+9q: ... <quitting>
+10q: ... <quitting>
+
+-- Create GIN Index to hit the bug.
+CREATE INDEX test_gin_aoco_to_tsvector_idx ON test_gin_aoco USING gin (to_tsvector('english', (org_name)::text));
+CREATE
+
+-- Clear
+DROP TABLE test_gin_aoco;
